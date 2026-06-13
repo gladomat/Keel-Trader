@@ -42,7 +42,7 @@ from sim.binpack import PRICE_FEATURES, read_header, write_market_bin
 
 # Locked universe + cadence live in the stdlib-only sim.universe so the live feed
 # (core.kraken_feed) can share them without dragging numpy into make test.
-from sim.universe import KRAKEN_USD_MAJORS, MS_PER_HOUR, TIMEFRAME  # noqa: F401
+from sim.universe import KRAKEN_USD_MAJORS, MS_PER_HOUR, TIMEFRAME, ms_per_bar  # noqa: F401
 
 VERSION = 1
 
@@ -69,7 +69,8 @@ def _now_ms() -> int:
 
 
 def fetch_ohlcv_paged(exchange, symbol: str, since_ms: int,
-                      until_ms: int | None = None, limit: int = 720) -> dict:
+                      until_ms: int | None = None, limit: int = 720,
+                      timeframe: str = TIMEFRAME) -> dict:
     """Page through ``exchange.fetch_ohlcv`` to assemble deep history.
 
     Kraken REST only returns its most recent ~720 bars per call regardless of
@@ -77,41 +78,43 @@ def fetch_ohlcv_paged(exchange, symbol: str, since_ms: int,
     Binance backfill below genuinely walks back years). Returns {ts_ms: [o,h,l,c,v]}.
     """
     until_ms = until_ms or _now_ms()
+    step = ms_per_bar(timeframe)
     out: dict[int, Bar] = {}
     cursor = since_ms
     while cursor < until_ms:
-        batch = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, since=cursor, limit=limit)
+        batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
         if not batch:
             break
         for ts, o, h, l, c, v in batch:
             if ts <= until_ms:
                 out[int(ts)] = [float(o), float(h), float(l), float(c), float(v)]
         last_ts = int(batch[-1][0])
-        if last_ts < cursor + MS_PER_HOUR:
+        if last_ts < cursor + step:
             # No forward progress (exchange clamped to its recent window) — stop.
             break
-        cursor = last_ts + MS_PER_HOUR
+        cursor = last_ts + step
         if exchange.enableRateLimit:
             # ccxt sleeps internally on calls, but be explicit between pages.
             time.sleep(exchange.rateLimit / 1000.0)
     return out
 
 
-def fetch_kraken(symbols: list[str], since_ms: int) -> dict:
-    """Fetch recent hourly OHLCV from Kraken (public endpoint) for each symbol."""
+def fetch_kraken(symbols: list[str], since_ms: int, timeframe: str = TIMEFRAME) -> dict:
+    """Fetch recent OHLCV from Kraken (public endpoint) for each symbol."""
     import ccxt
 
     ex = ccxt.kraken({"enableRateLimit": True})
     series: dict[str, dict] = {}
     for sym in symbols:
-        print(f"  [kraken] fetching {sym} since ms={since_ms} ...")
-        bars = fetch_ohlcv_paged(ex, sym, since_ms)
+        print(f"  [kraken] fetching {sym} ({timeframe}) since ms={since_ms} ...")
+        bars = fetch_ohlcv_paged(ex, sym, since_ms, timeframe=timeframe)
         print(f"  [kraken] {sym}: {len(bars)} bars")
         series[sym] = bars
     return series
 
 
-def fetch_binance_backfill(symbols: list[str], since_ms: int) -> dict:
+def fetch_binance_backfill(symbols: list[str], since_ms: int,
+                           timeframe: str = TIMEFRAME) -> dict:
     """Deep-history backfill via Binance USDT pairs (ccxt walks back years).
 
     Used for lookback beyond Kraken REST's ~720-bar window. Keyed back to our
@@ -126,8 +129,8 @@ def fetch_binance_backfill(symbols: list[str], since_ms: int) -> dict:
         if b_sym is None:
             print(f"  [binance] no backfill mapping for {sym}, skipping")
             continue
-        print(f"  [binance] backfill {sym} via {b_sym} since ms={since_ms} ...")
-        bars = fetch_ohlcv_paged(ex, b_sym, since_ms)
+        print(f"  [binance] backfill {sym} via {b_sym} ({timeframe}) since ms={since_ms} ...")
+        bars = fetch_ohlcv_paged(ex, b_sym, since_ms, timeframe=timeframe)
         print(f"  [binance] {sym}: {len(bars)} bars")
         series[sym] = bars
     return series
@@ -175,19 +178,21 @@ def merge_series(*sources: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Alignment                                                                    #
 # --------------------------------------------------------------------------- #
-def align_to_grid(series: dict, symbols: list[str]) -> tuple[list[str], list[int], np.ndarray]:
-    """Align all symbols to one regular hourly grid (intersection + forward-fill).
+def align_to_grid(series: dict, symbols: list[str],
+                  timeframe: str = TIMEFRAME) -> tuple[list[str], list[int], np.ndarray]:
+    """Align all symbols to one regular grid (intersection + forward-fill).
 
     The grid spans [max-of-per-symbol-first-bar .. min-of-per-symbol-last-bar] so
     every symbol genuinely covers the whole range (drop-to-intersection at the
     edges). Interior holes are forward-filled into a flat bar (o=h=l=c=last close,
-    volume=0) so the C sim sees a continuous hourly series. Returns
+    volume=0) so the C sim sees a continuous series. Returns
     (kept_symbols, grid_ts_ms, prices[T][S][5]).
     """
     present = [s for s in symbols if series.get(s)]
     if not present:
         raise ValueError("no symbol has any bars to align")
 
+    step = ms_per_bar(timeframe)
     first = max(min(series[s]) for s in present)
     last = min(max(series[s]) for s in present)
     if last < first:
@@ -196,7 +201,7 @@ def align_to_grid(series: dict, symbols: list[str]) -> tuple[list[str], list[int
             "fetch a wider window or add a backfill source"
         )
 
-    grid = list(range(first, last + MS_PER_HOUR, MS_PER_HOUR))
+    grid = list(range(first, last + step, step))
     n_t, n_s = len(grid), len(present)
     prices = np.zeros((n_t, n_s, PRICE_FEATURES), dtype=np.float32)
 
@@ -303,8 +308,9 @@ def _join_forecast_features(feats: np.ndarray, prices: np.ndarray,
 # Write                                                                        #
 # --------------------------------------------------------------------------- #
 def build_bin(series: dict, symbols: list[str], output: Path,
-              forecast_cache_root: Path | None = None) -> Path:
-    kept, grid, prices = align_to_grid(series, symbols)
+              forecast_cache_root: Path | None = None,
+              timeframe: str = TIMEFRAME) -> Path:
+    kept, grid, prices = align_to_grid(series, symbols, timeframe=timeframe)
     n_t, n_s = len(grid), len(kept)
 
     # Full FEATURE_SPEC: technical (8-15) from the bars, forecast (0-7) from the
@@ -348,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Start as YYYY-MM-DD or epoch ms (default: --days back)")
     ap.add_argument("--days", type=int, default=29,
                     help="Lookback in days when --since omitted (Kraken REST ~720 hourly bars)")
+    ap.add_argument("--timeframe", default=TIMEFRAME, choices=["1h", "4h", "1d"],
+                    help="Bar cadence (default 1h; use 1d for daily)")
     ap.add_argument("--backfill", choices=["none", "binance", "kraken-csv"], default="none",
                     help="Deep-history source beyond Kraken REST's ~720-bar window")
     ap.add_argument("--backfill-dir", default="sim/data/kraken_csv",
@@ -363,19 +371,20 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"K1 Kraken ingestion: {len(symbols)} symbols, backfill={args.backfill}")
 
+    tf = args.timeframe
     sources: list[dict] = []
     if args.backfill == "binance":
-        sources.append(fetch_binance_backfill(symbols, since_ms))
+        sources.append(fetch_binance_backfill(symbols, since_ms, timeframe=tf))
     elif args.backfill == "kraken-csv":
         csv_dir = Path(args.backfill_dir)
         sources.append({s: load_kraken_csv(s, csv_dir) for s in symbols})
 
     # Kraken REST last so its authoritative recent bars win on overlap.
-    sources.append(fetch_kraken(symbols, since_ms))
+    sources.append(fetch_kraken(symbols, since_ms, timeframe=tf))
 
     series = merge_series(*sources)
     fc_root = Path(args.forecast_cache) if args.forecast_cache else None
-    build_bin(series, symbols, output, forecast_cache_root=fc_root)
+    build_bin(series, symbols, output, forecast_cache_root=fc_root, timeframe=tf)
 
     # Sanity: the file we just wrote must parse through the shared reader.
     hdr = read_header(output)
