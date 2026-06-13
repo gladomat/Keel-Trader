@@ -71,6 +71,9 @@ data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1/K2, offline: needs ne
 build-cache-kraken: ## build the Chronos-2 forecast cache on Kraken bars (offline: torch/chronos + MPS)
 	PYTHONPATH=. $(PYTHON) -m forecast.build_kraken_cache --cache-root forecast/cache/kraken
 
+train-kraken: ## train the XGB champion on the Kraken .bin, first 70% (gate the rest OOS)
+	PYTHONPATH=. $(PYTHON) -m models.xgb.train --data $(KRAKEN_BIN) --out-dir artifacts/xgb --train-frac 0.7
+
 finetune-kraken: ## LoRA fine-tune Chronos-2 on Kraken bars + held-out MAE (offline: torch/chronos + MPS)
 	PYTHONPATH=. $(PYTHON) -m forecast.finetune_kraken
 

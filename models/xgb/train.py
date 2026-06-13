@@ -33,20 +33,26 @@ SPEC_VERSION = FEATURE_SPEC.version
 CLOSE_IDX = 3  # OHLCV close column in the price block
 
 
-def build_dataset(data_path: Path, horizon: int = 24, up_threshold: float = 0.0):
+def build_dataset(data_path: Path, horizon: int = 24, up_threshold: float = 0.0,
+                  train_frac: float = 1.0):
     """Flatten [T][S] samples into (X, y) for a forward-return up/down label.
 
     Label is 1 if the symbol's close ``horizon`` bars ahead exceeds today's close
     by ``up_threshold`` (fractional), else 0. The last ``horizon`` bars per symbol
     have no realised future and are dropped.
+
+    ``train_frac`` restricts training to the FIRST fraction of timesteps so the
+    gate can judge the held-out tail out-of-sample (no leakage): samples are taken
+    from ``t in [0, T*train_frac)`` and a label never peeks past that boundary.
     """
     feats = read_features(data_path)        # [T][S][F]
     prices = read_prices(data_path)         # [T][S][5]
     hdr = read_header(data_path)
     T, S = hdr["num_timesteps"], hdr["num_symbols"]
+    t_max = int(T * train_frac)
 
     X_rows, y_rows = [], []
-    for t in range(T - horizon):
+    for t in range(t_max - horizon):
         for s in range(S):
             close_now = prices[t][s][CLOSE_IDX]
             close_fut = prices[t + horizon][s][CLOSE_IDX]
@@ -63,8 +69,8 @@ def build_dataset(data_path: Path, horizon: int = 24, up_threshold: float = 0.0)
 
 def train(data_path: Path, out_dir: Path, *, horizon: int = 24,
           n_estimators: int = 200, max_depth: int = 4, learning_rate: float = 0.05,
-          run_id: str | None = None) -> Path:
-    X, y = build_dataset(data_path, horizon=horizon)
+          train_frac: float = 1.0, run_id: str | None = None) -> Path:
+    X, y = build_dataset(data_path, horizon=horizon, train_frac=train_frac)
     if len(X) == 0:
         raise SystemExit("no training samples produced (data too short for horizon?)")
 
@@ -101,6 +107,7 @@ def train(data_path: Path, out_dir: Path, *, horizon: int = 24,
         "symbols": read_symbols(data_path),
         "source_bin": str(data_path),
         "n_samples": int(len(X)),
+        "train_frac": train_frac,
         "label_pos_rate": float(y.mean()),
         "train_accuracy": train_acc,
         "params": {
@@ -124,13 +131,16 @@ def main():
     ap.add_argument("--n-estimators", type=int, default=200)
     ap.add_argument("--max-depth", type=int, default=4)
     ap.add_argument("--learning-rate", type=float, default=0.05)
+    ap.add_argument("--train-frac", type=float, default=1.0,
+                    help="fraction of timesteps (from the start) to train on; "
+                         "gate the rest out-of-sample")
     ap.add_argument("--run-id", default=None)
     args = ap.parse_args()
 
     train(
         Path(args.data), Path(args.out_dir), horizon=args.horizon,
         n_estimators=args.n_estimators, max_depth=args.max_depth,
-        learning_rate=args.learning_rate, run_id=args.run_id,
+        learning_rate=args.learning_rate, train_frac=args.train_frac, run_id=args.run_id,
     )
 
 
