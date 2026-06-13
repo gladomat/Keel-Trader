@@ -4,9 +4,10 @@ A trading system rebuilt clean from the lessons of the `moray` monorepo. The nam
 structural backbone that keeps a boat upright and stable — which is what this system is about (the
 safety spine is the crown jewel; the goal is low-drawdown, smooth-Sortino PnL).
 
-> **Read `docs/REBUILD_HANDOFF.md` first.** It is the brief — what to build, what to copy, and the
-> bugs not to reproduce. The rest of `docs/` is the carried-over knowledge base from the moray
-> deep-dive (the "why", with `file:line` cites).
+> **Read `docs/REBUILD_HANDOFF.md` first** (the brief — what to build, what to copy, bugs not to
+> reproduce), then **`docs/BUILD_PLAN.md`** (the sequenced roadmap for the rest of the
+> implementation). The remaining `docs/` are the carried-over knowledge base from the moray deep-dive
+> (the "why", with `file:line` cites).
 
 ## The non-negotiable invariants (don't break these)
 
@@ -51,7 +52,8 @@ make test-asan    # fill model under AddressSanitizer/UBSan
 Bootstrapped 2026-06-13. **Done:** repo skeleton, knowledge base, the single fill engine + golden
 test, the safety spine (`core/` — three-gate singleton + time-aware death-spiral guard, **paper-default,
 no live entry point wired**) + its golden tests. **Next:** the gate (`research/eval`, calling the one
-sim), then the incumbent xgb-daily model. See `docs/REBUILD_HANDOFF.md` §3 for the copy-list.
+sim), then the incumbent xgb-daily model. See `docs/BUILD_PLAN.md` for the full sequenced roadmap (phases 3–8) and
+`docs/REBUILD_HANDOFF.md` §3 for the copy-list.
 
 > **Live-writer note (HARD RULE 2):** `core/` ports the guard *logic* only. No process here can win
 > the live-writer lock yet. Wiring a live entry point is a deliberate, reviewed step — and if keel
