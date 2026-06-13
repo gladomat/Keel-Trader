@@ -66,8 +66,10 @@ data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored o
 data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1/K2, offline: needs network + ccxt)
 	PYTHONPATH=. $(PYTHON) sim/kraken_data.py --output $(KRAKEN_BIN)
 
+# Run as a module (-m): running the script by path would put forecast/ on
+# sys.path[0] and shadow the site-packages `chronos` with our forecast/chronos.py.
 build-cache-kraken: ## build the Chronos-2 forecast cache on Kraken bars (offline: torch/chronos + MPS)
-	PYTHONPATH=. $(PYTHON) forecast/build_kraken_cache.py --cache-root forecast/cache/kraken
+	PYTHONPATH=. $(PYTHON) -m forecast.build_kraken_cache --cache-root forecast/cache/kraken
 
 gate-kraken: build-sim ## run the crypto-retuned gate on the real Kraken .bin (K4, offline)
 	PYTHONPATH=. $(PYTHON) research/eval.py --data $(KRAKEN_BIN) --policy long

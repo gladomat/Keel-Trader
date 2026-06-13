@@ -67,7 +67,8 @@ def load_price_data(symbol: str, data_root: Path) -> pd.DataFrame:
 
 def load_forecast(symbol: str, cache_root: Path, horizon: int) -> pd.DataFrame:
     """Load forecast parquet for a symbol/horizon."""
-    path = cache_root / f"h{horizon}" / f"{symbol}.parquet"
+    from forecast.build_cache import safe_symbol
+    path = cache_root / f"h{horizon}" / f"{safe_symbol(symbol)}.parquet"
     if not path.exists():
         raise FileNotFoundError(f"No forecast at {path}")
     df = pd.read_parquet(path)

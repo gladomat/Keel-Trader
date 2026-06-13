@@ -148,6 +148,15 @@ def measure_objective_divergence(checkpoints: Sequence[Checkpoint]) -> Objective
     return result
 
 
+def safe_symbol(symbol: str) -> str:
+    """Filesystem-safe symbol for the parquet filename ('BTC/USD' -> 'BTC_USD').
+
+    The reader (``sim.export_data.load_forecast``) applies the same mapping, so a
+    quoted pair like ``BTC/USD`` does not turn its ``/`` into a directory.
+    """
+    return symbol.replace("/", "_")
+
+
 def write_cache(cache_root: Path, symbol: str, horizon: int,
                 rows: Sequence[ForecastRow]) -> Path:  # pragma: no cover - needs pandas
     """Write one symbol/horizon parquet after the leakage guard passes (offline)."""
@@ -161,7 +170,7 @@ def write_cache(cache_root: Path, symbol: str, horizon: int,
 
     out_dir = Path(cache_root) / f"h{horizon}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{symbol}.parquet"
+    out_path = out_dir / f"{safe_symbol(symbol)}.parquet"
 
     df = pd.DataFrame([
         {

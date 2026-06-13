@@ -82,6 +82,15 @@ class Chronos2LoRAForecaster:
         """
         self._require("torch")
         chronos = self._require("chronos")
+        if not hasattr(chronos, "BaseChronosPipeline"):
+            # Almost always a path shadow: running a script inside forecast/ puts
+            # that dir on sys.path[0], so `import chronos` resolves to THIS module
+            # (forecast/chronos.py) instead of the chronos-forecasting package.
+            raise RuntimeError(
+                f"imported the wrong 'chronos' ({getattr(chronos, '__file__', '?')}). "
+                "Run as a module, e.g. `python -m forecast.build_kraken_cache`, so "
+                "forecast/ is not on sys.path[0]."
+            )
         self._device = self._resolve_device()
         pipe = chronos.BaseChronosPipeline.from_pretrained(self.lora.base_model)
         try:
