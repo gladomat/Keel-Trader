@@ -27,25 +27,33 @@ safety spine is the crown jewel; the goal is low-drawdown, smooth-Sortino PnL).
 ## Layout (target shape)
 
 ```
-core/       safety spine (singleton lock + death-spiral guard) + broker boundary   [pending]
+core/       safety spine (singleton lock + death-spiral guard) + config            [done: guard ported]
 sim/        the ONE fill engine (binary-fill C core) + .bin data format            [done: ported]
 forecast/   one LoRA forecaster + parquet cache                                    [pending]
 models/     the incumbent (xgb daily) + one RL track                              [pending]
 research/   autoresearch loop + config-driven sweeps + append-only leaderboards    [pending]
 ops/        deploy (lock-verifying) + prod docs                                    [pending]
 docs/       carried-over knowledge base (the moray deep-dive)                      [done]
-tests/      golden fixtures (fill model pinned)                                    [done: fill model]
+tests/      golden fixtures (fill model + safety spine pinned)                      [done]
 ```
 
 ## Build / test
 
 ```bash
-make test        # golden fill-model fixture (the parity guard)
-make test-asan   # same, under AddressSanitizer/UBSan
+make test         # all golden fixtures: fill model (C) + safety spine (py)
+make test-fill    # just the fill-model parity guard
+make test-safety  # just the singleton lock + death-spiral guard
+make test-asan    # fill model under AddressSanitizer/UBSan
 ```
 
 ## Status
 
-Bootstrapped 2026-06-13. Done: repo skeleton, knowledge base, the single fill engine + its golden
-test. Next: port the safety spine (`core/`, paper-default), then the gate (`research/eval`), then the
-incumbent model. See `docs/REBUILD_HANDOFF.md` §3 for the copy-list.
+Bootstrapped 2026-06-13. **Done:** repo skeleton, knowledge base, the single fill engine + golden
+test, the safety spine (`core/` — three-gate singleton + time-aware death-spiral guard, **paper-default,
+no live entry point wired**) + its golden tests. **Next:** the gate (`research/eval`, calling the one
+sim), then the incumbent xgb-daily model. See `docs/REBUILD_HANDOFF.md` §3 for the copy-list.
+
+> **Live-writer note (HARD RULE 2):** `core/` ports the guard *logic* only. No process here can win
+> the live-writer lock yet. Wiring a live entry point is a deliberate, reviewed step — and if keel
+> ever trades the same Alpaca account as another system, both must share the same lock path/account
+> so the singleton actually protects across them.
