@@ -87,10 +87,20 @@ def _configs() -> list[tuple[str, StrategyConfig]]:
 
 def run(data_path: Path, *, train_frac: float = 0.6, n_windows: int = 10,
         window_steps: int = 240, seed: int = 0, mode: str = "long",
+        fee_rate: float | None = None, slip_bps: float | None = None,
+        max_hold: int | None = None,
         leaderboard: Path | None = None) -> List[SearchResult]:
     md = MarketData.load(str(data_path))
     results: List[SearchResult] = []
     long_short = mode == "longshort"
+    # Cost/turnover overrides (maker-fee + low-turnover experiments). When slip is
+    # given we collapse the slippage matrix to that single cell.
+    env_kw: dict = {}
+    if fee_rate is not None:
+        env_kw["fee_rate"] = fee_rate
+    if max_hold is not None:
+        env_kw["max_hold_hours"] = max_hold
+    slippages = (slip_bps,) if slip_bps is not None else None
     # In long-short mode the policy direction encodes the signal sign, so the
     # explicit sign sweep would just mirror long<->short — keep both anyway so
     # always-positive features (confidence/vol) still get a short-side test.
@@ -105,13 +115,15 @@ def run(data_path: Path, *, train_frac: float = 0.6, n_windows: int = 10,
                     else:
                         policy = make_strategy_policy(score_fn, md.num_symbols,
                                                       md.features_per_sym, cfg)
+                    _slip = {"slippages_bps": slippages} if slippages else {}
                     train_v = evaluate(policy, md, n_windows=n_windows,
                                        window_steps=window_steps, seed=seed,
                                        fail_fast=False, offset_lo_frac=0.0,
-                                       offset_hi_frac=train_frac)
+                                       offset_hi_frac=train_frac, **_slip, **env_kw)
                     test_v = evaluate(policy, md, n_windows=n_windows,
                                       window_steps=window_steps, seed=seed,
-                                      offset_lo_frac=train_frac, offset_hi_frac=1.0)
+                                      offset_lo_frac=train_frac, offset_hi_frac=1.0,
+                                      **_slip, **env_kw)
                     gen = generalization_score(train_v.worst_cell_median_monthly,
                                                test_v.worst_cell_median_monthly)
                     results.append(SearchResult(
@@ -158,12 +170,16 @@ def main():
     ap.add_argument("--window-steps", type=int, default=240)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mode", choices=["long", "longshort"], default="long")
+    ap.add_argument("--fee-rate", type=float, default=None, help="override taker fee (e.g. 0.0010 maker)")
+    ap.add_argument("--slip-bps", type=float, default=None, help="single slippage cell in bps")
+    ap.add_argument("--max-hold", type=int, default=None, help="max hold hours (lower turnover)")
     ap.add_argument("--leaderboard", default="artifacts/kraken_feature_search.csv")
     ap.add_argument("--top", type=int, default=15)
     args = ap.parse_args()
 
     results = run(Path(args.data), train_frac=args.train_frac, n_windows=args.windows,
                   window_steps=args.window_steps, seed=args.seed, mode=args.mode,
+                  fee_rate=args.fee_rate, slip_bps=args.slip_bps, max_hold=args.max_hold,
                   leaderboard=Path(args.leaderboard))
     n_promoted = sum(1 for r in results if r.promoted)
     print(f"ran {len(results)} candidates on {args.data}; {n_promoted} PROMOTED (clear the gate OOS)")
