@@ -1,0 +1,205 @@
+#ifndef TRADING_ENV_H
+#define TRADING_ENV_H
+
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdio.h>
+
+/* Branch-prediction hints for GCC/Clang; fall back to identity on other compilers */
+#ifndef LIKELY
+#  define LIKELY(x)   __builtin_expect(!!(x), 1)
+#  define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#endif
+
+/* ---------- constants ---------- */
+#define MAX_SYMBOLS       128
+#define FEATURES_PER_SYM  16
+#define PRICE_FEATS       5   /* O H L C V */
+#define SYM_NAME_LEN      16
+#define HEADER_SIZE        64
+#define INITIAL_CASH       10000.0f
+
+/* ---------- binary-file header (matches export_data.py) ---------- */
+typedef struct {
+    char     magic[4];          /* "MKTD" */
+    unsigned int version;
+    unsigned int num_symbols;
+    unsigned int num_timesteps;
+    unsigned int features_per_sym;
+    unsigned int price_features;
+    char     padding[40];
+} DataHeader;
+
+/* ---------- pufferlib Log (all floats, 'n' last) ---------- */
+typedef struct {
+    float total_return;
+    float sortino;
+    float max_drawdown;
+    float num_trades;
+    float win_rate;
+    float avg_hold_hours;
+    float n;                    /* required last by pufferlib */
+} Log;
+
+/* ---------- shared read-only market data (one per process) ---------- */
+typedef struct {
+    int       num_symbols;
+    int       num_timesteps;
+    int       features_per_sym; /* 16 for v1/v2, may differ for v3+ */
+    char      sym_names[MAX_SYMBOLS][SYM_NAME_LEN];
+
+    /* pointers into mmapped / malloced data */
+    float*    features;         /* [T][S][features_per_sym] */
+    float*    prices;           /* [T][S][PRICE_FEATS] */
+    unsigned char* tradable;    /* optional [T][S] uint8 mask (1=tradable, 0=market closed) */
+    unsigned char* any_tradable;/* optional [T] uint8 mask for fast "any market open?" checks */
+
+    /* owned memory (free on close) */
+    void*     file_buf;         /* raw file buffer */
+    size_t    file_size;
+} MarketData;
+
+/* ---------- per-agent state ---------- */
+typedef struct {
+    float  cash;
+    int    position_sym;        /* -1 = flat, 0..N-1 = long, N..2N-1 = short */
+    float  position_qty;        /* shares held (positive) */
+    float  entry_price;
+    int    hold_hours;
+    float  peak_equity;
+    float  initial_equity;
+    int    num_trades;
+    int    winning_trades;
+    float  sum_neg_sq;          /* for sortino */
+    float  sum_ret;
+    int    ret_count;
+    float  prev_ret;            /* previous return for smoothness calc */
+    float  max_drawdown;        /* running max drawdown over the episode */
+    int    data_offset;         /* starting row in the data (randomised) */
+    int    step;                /* current step within episode */
+} AgentState;
+
+/* ---------- main environment struct (pufferlib compatible) ---------- */
+typedef struct {
+    /* --- pufferlib required fields (must be first) --- */
+    Log            log;
+    float*         observations;    /* [obs_size] */
+    int*           actions;         /* [1] */
+    float*         rewards;         /* [1] */
+    unsigned char* terminals;       /* [1] */
+
+    /* --- env config --- */
+    int            max_steps;       /* episode length in hours */
+    float          fee_rate;        /* transaction cost (e.g. 0.001) */
+    float          max_leverage;    /* 1.0 = no leverage */
+    float          short_borrow_apr;/* annual borrow rate applied to open short notional */
+    float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
+    int            max_hold_hours;  /* force close position after this many hours (0=disabled) */
+    int            enable_drawdown_profit_early_exit;   /* stop once running max drawdown exceeds profit after progress threshold */
+    int            drawdown_profit_early_exit_verbose;  /* print explicit early-exit reason when enabled */
+    int            drawdown_profit_early_exit_min_steps;/* minimum episode length before the rule applies */
+    float          drawdown_profit_early_exit_progress_fraction; /* progress threshold for the rule */
+
+    /* --- action-space config ---
+       Action layout:
+         0 = go flat
+         1..K = long actions
+         K+1..2K = short actions
+       where K = num_symbols * action_allocation_bins * action_level_bins.
+       Within each side, action factors as (symbol, allocation_bin, level_bin). */
+    int            action_allocation_bins;  /* >=1, target exposure bins (e.g. 5 => 20/40/60/80/100%) */
+    int            action_level_bins;       /* >=1, execution level bins around close */
+    float          action_max_offset_bps;   /* max abs level offset in bps (e.g. 50 => +/-0.50%) */
+
+    /* --- reward shaping config --- */
+    float          reward_scale;    /* multiply return by this (default 10) */
+    float          reward_clip;     /* clip abs(reward) to this (default 5) */
+    float          cash_penalty;    /* per-step penalty for being flat (default 0.01) */
+    float          drawdown_penalty;/* penalty scale for drawdown from peak (default 0) */
+    float          downside_penalty;/* penalty scale for negative returns (ret^2) (default 0) */
+    float          smooth_downside_penalty;  /* smooth downside penalty scale (softplus-ret proxy)^2 */
+    float          smooth_downside_temperature; /* temperature for smooth downside penalty */
+    float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
+    float          smoothness_penalty;/* penalty for return volatility (ret - prev_ret)^2 (default 0) */
+    float          fill_slippage_bps; /* adverse fill slippage in basis points (default 0, realistic: 5-12) */
+    float          fill_buffer_bps;   /* limit-order acceptance pessimism; market must go past target by this many bps before we accept fill. Mirrors Python eval _resolve_limit_fill_price. Default 0. */
+    float          fill_probability;  /* probability an order fills [0,1]; 1.0 = always fills (default 1.0) */
+    int            decision_lag;      /* >=1: obs=t-lag, exec=t. Default 2 (production-safe). Pass 1 explicitly for legacy lookahead-tolerant research paths only. */
+
+    /* --- prod-parity death-spiral guard (mirrors alpaca_singleton.guard_sell_against_death_spiral) ---
+       Refuses long sells at price below entry_price * (1 - tol_bps/10000). Time-aware:
+       intraday tol if hold_hours < stale_after_bars, overnight tol otherwise.
+       tolerance_bps <= 0 disables the guard (default, off). Shorts never refused. */
+    float          death_spiral_tolerance_bps;           /* intraday tolerance bps; <=0 disables (default 0 = off) */
+    float          death_spiral_overnight_tolerance_bps; /* wider overnight tolerance bps (default 500) */
+    int            death_spiral_stale_after_bars;        /* >=0; bars-held threshold to switch to overnight tol (default 8) */
+
+    /* --- deterministic offset for eval (set to -1 for random) --- */
+    int            forced_offset;    /* if >= 0, use this exact data_offset instead of random */
+
+    /* --- shared data (NOT owned, do not free) --- */
+    MarketData*    data;
+
+    /* --- per-agent state --- */
+    AgentState     agent;
+
+    /* --- derived sizes --- */
+    int            obs_size;
+    int            num_actions;     /* 1 + 2*(num_symbols*allocation_bins*level_bins) */
+} TradingEnv;
+
+/* ---------- observation layout ----------
+ *
+ * F = md->features_per_sym  (16 for v1/v2, 20 for v3)
+ *
+ * For each symbol s in [0, S):
+ *   obs[s*F + 0..F-1]  = feature vector at current timestep
+ *
+ * Then portfolio state:
+ *   obs[S*F + 0]      = cash / INITIAL_CASH
+ *   obs[S*F + 1]      = position_value / INITIAL_CASH  (signed: neg for short)
+ *   obs[S*F + 2]      = unrealised_pnl / INITIAL_CASH
+ *   obs[S*F + 3]      = hours_in_position / max_steps
+ *   obs[S*F + 4]      = episode_progress
+ *   obs[S*F + 5..4+S] = one-hot current position (0 if flat)
+ *
+ * Total obs_size = S*F + 5 + S
+ * ---------------------------------------- */
+
+/* ---------- core pufferlib functions ---------- */
+void c_reset(TradingEnv* env);
+__attribute__((hot)) void c_step(TradingEnv* env);
+void c_close(TradingEnv* env);
+
+/* no-op render */
+static inline void c_render(TradingEnv* env) { (void)env; }
+
+/* ---------- data loading ---------- */
+MarketData* market_data_load(const char* path);
+void        market_data_free(MarketData* md);
+
+/* ---------- inline helpers ---------- */
+
+static inline float get_feature(const MarketData* md, int t, int s, int f) {
+    return md->features[(t * md->num_symbols + s) * md->features_per_sym + f];
+}
+
+static inline float get_price(const MarketData* md, int t, int s, int p) {
+    return md->prices[(t * md->num_symbols + s) * PRICE_FEATS + p];
+}
+
+static inline int is_tradable(const MarketData* md, int t, int s) {
+    if (md->tradable == NULL) return 1;
+    return md->tradable[t * md->num_symbols + s] != 0;
+}
+
+/* price indices */
+#define P_OPEN  0
+#define P_HIGH  1
+#define P_LOW   2
+#define P_CLOSE 3
+#define P_VOL   4
+
+#endif /* TRADING_ENV_H */

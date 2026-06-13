@@ -1,0 +1,20 @@
+# build artifacts
+*.o
+*.so
+*.dylib
+__pycache__/
+*.pyc
+.venv/
+build/
+
+# data (packed market binaries are large; regenerate via sim/export_data.py)
+*.bin
+data/
+
+# local state (account locks, buy memory) — never commit
+strategy_state/
+*.lock
+
+# checkpoints / leaderboards are run outputs
+checkpoints/
+*_leaderboard.csv
