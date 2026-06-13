@@ -23,8 +23,9 @@ class LoRAConfig:
     r: int = 16
     alpha: int = 32
     dropout: float = 0.05
-    # Attention projection modules the adapter targets (q/k/v/o).
-    target_modules: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+    # Attention projection modules the adapter targets. Chronos-2's attention
+    # Linear leaves are named q/k/v/o (verified via named_modules), not q_proj/…
+    target_modules: tuple[str, ...] = ("q", "k", "v", "o")
 
 
 @dataclass
@@ -100,15 +101,42 @@ class Chronos2LoRAForecaster:
         self._pipe = pipe
         return pipe
 
-    def fit(self, dataset) -> "Chronos2LoRAForecaster":  # pragma: no cover - offline
-        """Optional LoRA fine-tune. Zero-shot inference is wired and sufficient
-        for the forecast cache, so this remains an opt-in accuracy step."""
+    def fit(self, inputs, *, prediction_length: int = 24,
+            learning_rate: float = 1e-4, num_steps: int = 500,
+            batch_size: int = 16, context_length: int | None = None,
+            validation_inputs=None, output_dir=None
+            ) -> "Chronos2LoRAForecaster":  # pragma: no cover - offline training
+        """LoRA-fine-tune Chronos-2 on ``inputs`` via the official pipeline.
+
+        ``inputs`` follows the Chronos-2 predict/fit format: a sequence of series,
+        each a ``(n_variates, length)`` array (here [close, high, low]). Uses
+        ``finetune_mode='lora'`` with this wrapper's LoRA config (r/alpha/dropout,
+        targets q/k/v/o). The returned, tuned pipeline replaces ``self._pipe`` so
+        a subsequent ``forecast_rows`` builds the cache from the fine-tuned model.
+        """
+        self._require("torch")
+        peft = self._require("peft")
         if self._pipe is None:
             self.load_base()
-        raise NotImplementedError(
-            "LoRA fine-tune is optional; zero-shot predict_quantiles/forecast_rows "
-            "are implemented and build the cache. Wire a trainer here to improve MAE."
+        lora_cfg = peft.LoraConfig(
+            r=self.lora.r, lora_alpha=self.lora.alpha, lora_dropout=self.lora.dropout,
+            target_modules=list(self.lora.target_modules), bias="none",
         )
+        tuned = self._pipe.fit(
+            inputs, prediction_length=prediction_length,
+            finetune_mode="lora", lora_config=lora_cfg,
+            learning_rate=learning_rate, num_steps=num_steps,
+            batch_size=batch_size,
+            context_length=context_length or self.train_cfg.context_length,
+            validation_inputs=validation_inputs,
+            output_dir=str(output_dir) if output_dir else None,
+        )
+        self._pipe = tuned
+        try:
+            self._pipe.model = self._pipe.model.to(self._device or self._resolve_device())
+        except Exception:
+            pass
+        return self
 
     def predict_quantiles(self, context, horizon: int,
                           quantiles: Sequence[float] | None = None):  # pragma: no cover

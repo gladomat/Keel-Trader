@@ -53,6 +53,29 @@ make autoresearch-kraken
 > baseline policies are honestly REJECTED (fail-fast on >30% drawdown over the
 > 120-day window) — promotion needs a real trained champion, not a baseline.
 
+## LoRA fine-tune (optional) — keep zero-shot for now
+
+`Chronos2LoRAForecaster.fit` wires Chronos-2's official `fit(finetune_mode='lora')`
+(LoRA on the q/k/v/o attention linears). `make finetune-kraken` trains on the 5
+majors' close/high/low and reports out-of-sample close-MAE on the held-out tail
+BEFORE vs AFTER tuning.
+
+Empirical finding (2026-06-13, 120d / 5 series, last-24-bar holdout MAE):
+
+| Config | close MAE | vs zero-shot |
+|--------|-----------|--------------|
+| zero-shot | 32.82 | — |
+| LoRA, lr 1e-4, 500 steps | 72.41 | **−120% (catastrophic)** |
+| LoRA, lr 1e-5, 300 steps | 32.91 | −0.2% (neutral) |
+
+Takeaway: zero-shot Chronos-2 is already strong; LoRA on this small in-domain set
+is neutral-to-harmful (aggressive LR causes catastrophic forgetting; gentle LR
+barely adapts in a few hundred steps). **The cache stays zero-shot.** Levers that
+would actually help before re-trying: much more/longer history, more symbols, a
+scale-normalized loss/metric (the MAE above is BTC-scale-dominated), the package
+default `lr≈1e-6`, and validation-based early stopping. The fine-tune path is in
+place for when that data exists.
+
 Record each promoted champion's evidence in `ops/prod.md` (append, never
 overwrite). A champion may only go to K6 (live) after it clears this gate on
 **unseen** data and a clean K5 paper run.

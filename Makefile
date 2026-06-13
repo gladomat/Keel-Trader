@@ -71,6 +71,9 @@ data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1/K2, offline: needs ne
 build-cache-kraken: ## build the Chronos-2 forecast cache on Kraken bars (offline: torch/chronos + MPS)
 	PYTHONPATH=. $(PYTHON) -m forecast.build_kraken_cache --cache-root forecast/cache/kraken
 
+finetune-kraken: ## LoRA fine-tune Chronos-2 on Kraken bars + held-out MAE (offline: torch/chronos + MPS)
+	PYTHONPATH=. $(PYTHON) -m forecast.finetune_kraken
+
 gate-kraken: build-sim ## run the crypto-retuned gate on the real Kraken .bin (K4, offline)
 	PYTHONPATH=. $(PYTHON) research/eval.py --data $(KRAKEN_BIN) --policy long
 
