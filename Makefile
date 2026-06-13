@@ -12,7 +12,7 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data data-kraken clean
 
 test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch ## run all golden fixtures (fill + safety + sim + features + gate + strategy + forecast + backtest + rl + autoresearch)
 
@@ -53,6 +53,9 @@ test-autoresearch: build-sim ## pin the autoresearch leaderboard (append-only, r
 
 data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored output)
 	PYTHONPATH=. $(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
+
+data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1, offline: needs network + ccxt)
+	PYTHONPATH=. $(PYTHON) sim/kraken_data.py --output sim/data/kraken_market.bin
 
 test-asan: ## same fixture under ASan/UBSan
 	$(CC) $(SAN) tests/test_fill_model.c -lm -o /tmp/keel_test_fill_asan
