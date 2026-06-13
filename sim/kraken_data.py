@@ -40,12 +40,10 @@ from forecast.features import FEATURE_SPEC, FEATURES_PER_SYM
 from forecast.technical import TECHNICAL_FEATURES, technical_features
 from sim.binpack import PRICE_FEATURES, read_header, write_market_bin
 
-# Locked universe (see Muninn "keel_trader Kraken build decisions"): the 5 USD
-# majors, quote = USD, hourly bars. Kraken's XBT normalises to BTC/USD via ccxt.
-KRAKEN_USD_MAJORS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LTC/USD"]
+# Locked universe + cadence live in the stdlib-only sim.universe so the live feed
+# (core.kraken_feed) can share them without dragging numpy into make test.
+from sim.universe import KRAKEN_USD_MAJORS, MS_PER_HOUR, TIMEFRAME  # noqa: F401
 
-TIMEFRAME = "1h"
-MS_PER_HOUR = 3_600_000
 VERSION = 1
 
 # Map our USD pairs onto Binance's USDT pairs for the optional deep-history

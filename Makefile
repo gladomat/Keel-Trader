@@ -12,12 +12,12 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data data-kraken gate-kraken backtest-kraken autoresearch-kraken clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch test-kraken-paper build-sim data data-kraken gate-kraken backtest-kraken autoresearch-kraken paper-kraken clean
 
 # Real Kraken .bin the crypto judges run against (git-ignored; build via data-kraken).
 KRAKEN_BIN ?= sim/data/kraken_market.bin
 
-test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch ## run all golden fixtures (fill + safety + sim + features + gate + strategy + forecast + backtest + rl + autoresearch)
+test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch test-kraken-paper ## run all golden fixtures
 
 test-fill: ## pin the single fill engine against its golden values
 	$(CC) $(CFLAGS) tests/test_fill_model.c -lm -o /tmp/keel_test_fill
@@ -54,6 +54,9 @@ test-rl: build-sim ## pin the RL policy -> gate seam (no second sim) + GAE
 test-autoresearch: build-sim ## pin the autoresearch leaderboard (append-only, reproducible, gate-honest)
 	PYTHONPATH=. $(PYTHON) tests/test_autoresearch.py
 
+test-kraken-paper: build-sim ## pin the live-data paper loop (paper-only, fills via the ONE C engine)
+	PYTHONPATH=. $(PYTHON) tests/test_kraken_paper.py
+
 data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored output)
 	PYTHONPATH=. $(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
 
@@ -70,6 +73,9 @@ backtest-kraken: build-sim ## backtest the XGB strategy through the gate on real
 autoresearch-kraken: build-sim ## run the autoresearch search loop on real Kraken data (K4)
 	PYTHONPATH=. $(PYTHON) research/autoresearch.py --data $(KRAKEN_BIN) \
 		--leaderboard artifacts/kraken_leaderboard.csv
+
+paper-kraken: build-sim ## live-data PAPER trading vs Kraken — no real orders (K5, offline: needs ccxt)
+	PYTHONPATH=. $(PYTHON) -m core.kraken_paper --ticks 24 --sleep 3600
 
 test-asan: ## same fixture under ASan/UBSan
 	$(CC) $(SAN) tests/test_fill_model.c -lm -o /tmp/keel_test_fill_asan
