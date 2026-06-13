@@ -7,8 +7,8 @@ Python reimplementation of fills). For a policy it:
   * runs N random *unseen* windows through the C sim (``sim/keel_sim``);
   * sweeps a **slippage matrix {0,5,10,20} bps and reports the worst cell** — a
     policy only promotes if it survives the harshest slippage;
-  * uses production-realism defaults: ``decision_lag>=2``, binary fills, 10bps
-    fee, 5bps fill buffer, 6h max hold;
+  * uses production-realism defaults: ``decision_lag>=2``, binary fills, 26bps
+    Kraken-taker fee, 5bps fill buffer, 6h max hold;
   * **fails fast** on bad policies: bails a cell early when a window breaches the
     max-drawdown limit (0.20) or when the cell's median-monthly target has become
     arithmetically unreachable;
@@ -42,7 +42,10 @@ BARS_PER_MONTH = 730.0             # 8760 / 12
 
 # --- production-realism env defaults ---------------------------------------
 DEFAULT_DECISION_LAG = 2
-DEFAULT_FEE_RATE = 0.001            # 10 bps
+# K3 (#13): Kraken spot taker fee ~26 bps per leg (the equity 10 bps was
+# optimistic for crypto). Applied per leg by the C sim, so the gate prices a
+# round trip at ~52 bps of friction before slippage — no rosy fills.
+DEFAULT_FEE_RATE = 0.0026           # 26 bps (Kraken taker)
 DEFAULT_FILL_BUFFER_BPS = 5.0
 DEFAULT_FILL_PROBABILITY = 1.0      # binary fills (all-or-nothing in the C sim)
 DEFAULT_MAX_HOLD_HOURS = 6

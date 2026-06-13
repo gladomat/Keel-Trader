@@ -19,6 +19,7 @@ from pathlib import Path
 
 from research import policies as P
 from research.eval import (
+    DEFAULT_FEE_RATE,
     PROMOTION_TARGET_MEDIAN_MONTHLY,
     evaluate,
     run_window,
@@ -64,6 +65,12 @@ def test_flat_policy_zero_return_and_rejected():
     print("ok test_flat_policy_zero_return_and_rejected")
 
 
+def test_crypto_fee_default():
+    """K3: the gate prices Kraken's ~26 bps taker fee, not the old 10 bps."""
+    assert abs(DEFAULT_FEE_RATE - 0.0026) < 1e-12, DEFAULT_FEE_RATE
+    print("ok test_crypto_fee_default")
+
+
 def test_fill_parity_guard():
     """The gate's C fill path must equal the golden fixture, cell-for-cell."""
     for buf, slip, exp_fill, exp_entry, exp_cost in _GOLDEN_FILL:
@@ -97,6 +104,7 @@ def test_fail_fast_triggers_early():
 
 if __name__ == "__main__":
     test_flat_policy_zero_return_and_rejected()
+    test_crypto_fee_default()
     test_fill_parity_guard()
     test_fail_fast_triggers_early()
     print("all gate tests passed")

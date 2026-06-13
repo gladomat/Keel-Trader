@@ -51,30 +51,34 @@ from core.alpaca_account_lock import (
 )
 
 
-# Intraday tolerance: refuse a sell if it's priced more than this many bps
-# BELOW the most recent buy for the symbol. 50 bps = 0.5% of buy price —
-# generous enough to accommodate spread/slippage but tight enough to catch
-# runaway loops that keep slashing the ask within a single session.
-DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS = 50.0
+# K3 (#13) — recalibrated for 24/7 crypto on Kraken. There is no equity
+# "market closed" gap to special-case, so the old session-based regime (tight
+# intraday 50 bps vs. wide overnight 500 bps, switched on an 8h staleness
+# threshold) is GONE. In its place: a single, volatility-aware tolerance.
+#
+# Base tolerance: refuse a sell priced more than this many bps BELOW the most
+# recent buy for the symbol. 300 bps = 3% — wide enough that an hourly crypto
+# rotation through Kraken's ~26 bps taker + normal spread/volatility does not
+# trip the guard, tight enough to catch a runaway loop slashing the ask.
+DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS = 300.0
 
-# Overnight/hold-through tolerance. Hold-through mode carries a position
-# overnight and rotates at the NEXT open, so a normal overnight drift of
-# 100-300 bps must not trigger the guard (otherwise a down-day crashes the
-# daemon in a restart loop). Anything wider than 500 bps is still caught.
-DEFAULT_OVERNIGHT_TOLERANCE_BPS = 500.0
-
-# A buy record whose timestamp is older than this is treated as an
-# overnight/multi-session hold — the overnight tolerance applies. 8 hours
-# keeps same-day 09:30→15:50 (6h20m) rotations on the tight 50 bps while
-# flipping any next-morning rotation (>= ~17h) onto the wide tolerance.
-DEFAULT_OVERNIGHT_THRESHOLD_SECONDS = 8 * 60 * 60  # 8 hours
+# Volatility scaling: when the caller passes the symbol's ATR% (atr_pct_24h, a
+# fraction of price), the effective floor widens to at least this multiple of
+# ATR below the buy. A high-ATR name (e.g. SOL) thus gets proportionally more
+# room than a calm one, without ever tightening below the base tolerance.
+DEFAULT_ATR_TOLERANCE_MULT = 3.0
 
 # Buy-price memory window. Older entries are pruned so a week-old buy
 # doesn't block a legitimate market-driven sell.
 DEFAULT_BUY_MEMORY_SECONDS = 60 * 60 * 24 * 3  # 3 days
 DEFAULT_ALPACA_ACCOUNT_NAME = "alpaca_live_writer"
-SINGLETON_OVERRIDE_ENV_VAR = "ALPACA_SINGLETON_OVERRIDE"
-DEATH_SPIRAL_OVERRIDE_ENV_VAR = "ALPACA_DEATH_SPIRAL_OVERRIDE"
+# Override flags accept a broker-neutral KEEL_* name first, with the legacy
+# ALPACA_* name still honoured (K3 broker-neutral naming; never weakens a guard).
+SINGLETON_OVERRIDE_ENV_VARS = ("KEEL_SINGLETON_OVERRIDE", "ALPACA_SINGLETON_OVERRIDE")
+DEATH_SPIRAL_OVERRIDE_ENV_VARS = ("KEEL_DEATH_SPIRAL_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE")
+# Back-compat aliases (single-name) for any external importer.
+SINGLETON_OVERRIDE_ENV_VAR = SINGLETON_OVERRIDE_ENV_VARS[1]
+DEATH_SPIRAL_OVERRIDE_ENV_VAR = DEATH_SPIRAL_OVERRIDE_ENV_VARS[1]
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,11 @@ def _buy_memory_file_lock_path(account_name: str) -> Path:
 
 def _env_flag(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _any_env_flag(names) -> bool:
+    """True if ANY of the accepted env-var names is set truthy (alias support)."""
+    return any(_env_flag(n) for n in names)
 
 
 def _current_account_name() -> str:
@@ -129,8 +138,7 @@ class SingletonState:
     lock: Optional[AlpacaAccountLock] = None
     death_spiral_guard_enabled: bool = True
     death_spiral_tolerance_bps: float = DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS
-    overnight_tolerance_bps: float = DEFAULT_OVERNIGHT_TOLERANCE_BPS
-    overnight_threshold_seconds: int = DEFAULT_OVERNIGHT_THRESHOLD_SECONDS
+    atr_tolerance_mult: float = DEFAULT_ATR_TOLERANCE_MULT
     buy_memory_seconds: int = DEFAULT_BUY_MEMORY_SECONDS
     _mu: RLock = field(default_factory=RLock)
 
@@ -207,7 +215,7 @@ def enforce_live_singleton(
                 _STATE = SingletonState(account_name=account_name, lock=None)
         return None
 
-    if _env_flag(SINGLETON_OVERRIDE_ENV_VAR):
+    if _any_env_flag(SINGLETON_OVERRIDE_ENV_VARS):
         _write_marker("enforce_live_singleton",
                       f"OVERRIDE ACTIVE — running live without singleton lock "
                       f"(service={service_name}, account={account_name})")
@@ -359,28 +367,36 @@ def guard_sell_against_death_spiral(
     price: float,
     *,
     tolerance_bps: Optional[float] = None,
-    stale_tolerance_bps: Optional[float] = None,
-    stale_after_seconds: Optional[int] = None,
+    atr_pct: Optional[float] = None,
+    atr_tolerance_mult: Optional[float] = None,
+    **_deprecated,
 ) -> None:
     """Raise RuntimeError if the sell would put us below the remembered buy.
 
-    Tolerance is time-aware. If the recorded buy is less than
-    ``stale_after_seconds`` old (default 8h), the tight intraday tolerance
-    (``tolerance_bps`` override OR ``DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS``)
-    applies. Otherwise the overnight tolerance (``stale_tolerance_bps``
-    override OR ``DEFAULT_OVERNIGHT_TOLERANCE_BPS``) is used — holding
-    through a normal overnight gap must not trigger a crash-loop.
+    K3 (#13): a single, volatility-aware tolerance for 24/7 crypto — no equity
+    session regime. The floor is ``buy * (1 - eff_bps/10000)`` where:
 
-    If ``tolerance_bps`` is given explicitly it is used regardless of age
-    (backward-compatible path for callers that already know which regime
-    they are in).
+      * ``eff_bps`` defaults to ``DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS`` (or the
+        process state's configured value), or to an explicit ``tolerance_bps``;
+      * when ``atr_pct`` (the symbol's ATR as a fraction of price) is supplied,
+        the floor widens to at least ``atr_tolerance_mult * atr_pct`` below the
+        buy — a volatile name gets proportionally more room — but NEVER tightens
+        below the base tolerance.
 
-    Raises:
-      RuntimeError — refused sell (sellers in a death spiral). Callers
-      should let this propagate and crash the daemon; the systemd unit
-      will mark the service as failed, which is the desired behaviour
-      (loud manual re-enable only).
+    Sell-only and fail-closed: a refusal raises RuntimeError and should
+    propagate and crash the daemon (systemd marks it failed → loud manual
+    re-enable only). Defeatable solely via the loud override env flag.
+
+    Legacy ``stale_*`` kwargs (the removed equity overnight regime) are accepted
+    and ignored so old callers don't crash; a marker is logged if they appear.
     """
+    if _deprecated:
+        _write_marker(
+            "guard_sell_against_death_spiral",
+            f"ignoring deprecated kwargs {sorted(_deprecated)} (the equity "
+            "overnight regime was removed in K3; tolerance is now single + "
+            "volatility-aware).",
+        )
     if not side:
         return
     side_norm = str(side).strip().lower()
@@ -393,7 +409,7 @@ def guard_sell_against_death_spiral(
         state = _STATE
     account_name = _current_account_name()
 
-    if _env_flag(DEATH_SPIRAL_OVERRIDE_ENV_VAR):
+    if _any_env_flag(DEATH_SPIRAL_OVERRIDE_ENV_VARS):
         _write_marker(
             "guard_sell_against_death_spiral",
             f"OVERRIDE ACTIVE — allowing sell of {symbol} at {price} "
@@ -418,33 +434,26 @@ def guard_sell_against_death_spiral(
         if buy_price <= 0:
             return
 
-        # Time-aware tolerance selection. An explicit tolerance_bps wins
-        # (back-compat / per-call override). Otherwise: age-of-buy decides.
+        # Single tolerance: explicit override OR the configured/default base.
         if tolerance_bps is not None:
-            tol_bps = float(tolerance_bps)
-            regime = "explicit"
+            base_bps = float(tolerance_bps)
+        elif state is not None:
+            base_bps = float(state.death_spiral_tolerance_bps)
         else:
-            intraday_tol = (
-                state.death_spiral_tolerance_bps if state is not None
-                else DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS
-            )
-            overnight_tol = (
-                float(stale_tolerance_bps) if stale_tolerance_bps is not None
-                else (state.overnight_tolerance_bps if state is not None
-                      else DEFAULT_OVERNIGHT_TOLERANCE_BPS)
-            )
-            threshold = (
-                int(stale_after_seconds) if stale_after_seconds is not None
-                else (state.overnight_threshold_seconds if state is not None
-                      else DEFAULT_OVERNIGHT_THRESHOLD_SECONDS)
-            )
-            age = time.time() - float(rec.get("ts", 0.0))
-            if age > threshold:
-                tol_bps = float(overnight_tol)
-                regime = "overnight"
-            else:
-                tol_bps = float(intraday_tol)
-                regime = "intraday"
+            base_bps = DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS
+
+        tol_bps = base_bps
+        basis = "base"
+        # Volatility-aware widening (never tightening): a high-ATR name earns a
+        # wider floor so normal hourly crypto swings don't trip the guard.
+        if atr_pct is not None and _finite(atr_pct) and atr_pct > 0:
+            mult = (float(atr_tolerance_mult) if atr_tolerance_mult is not None
+                    else (state.atr_tolerance_mult if state is not None
+                          else DEFAULT_ATR_TOLERANCE_MULT))
+            vol_bps = float(mult) * float(atr_pct) * 10000.0
+            if vol_bps > tol_bps:
+                tol_bps = vol_bps
+                basis = f"atr({atr_pct:.4f}x{mult})"
 
         floor = buy_price * (1.0 - float(tol_bps) / 10000.0)
         if price < floor:
@@ -452,14 +461,14 @@ def guard_sell_against_death_spiral(
                 "guard_sell_against_death_spiral",
                 f"REFUSING SELL of {symbol} at {price:.4f}: "
                 f"last buy at {buy_price:.4f}, floor {floor:.4f} "
-                f"(tolerance {tol_bps} bps, regime={regime}). Set "
-                f"ALPACA_DEATH_SPIRAL_OVERRIDE=1 to bypass. This refusal "
+                f"(tolerance {tol_bps:.1f} bps, basis={basis}). Set "
+                f"KEEL_DEATH_SPIRAL_OVERRIDE=1 to bypass. This refusal "
                 f"raises RuntimeError to stop the loop.",
             )
             raise RuntimeError(
                 f"alpaca_singleton: refusing death-spiral SELL of {symbol} "
                 f"at {price} (last buy {buy_price}, floor {floor}, "
-                f"tolerance {tol_bps} bps, regime={regime})"
+                f"tolerance {tol_bps:.1f} bps, basis={basis})"
             )
 
 
@@ -490,5 +499,6 @@ __all__ = [
     "forget_buy",
     "forget_all_buys",
     "DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS",
+    "DEFAULT_ATR_TOLERANCE_MULT",
     "DEFAULT_BUY_MEMORY_SECONDS",
 ]

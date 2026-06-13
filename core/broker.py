@@ -31,6 +31,10 @@ from core.alpaca_singleton import (
 
 logger = logging.getLogger("keel.broker")
 
+# Broker-neutral live-enable gate (K3 #13). The check accepts any of
+# ``config.LIVE_ENABLE_ENV_VARS`` (KEEL_* primary, legacy ALPACA name aliased).
+# ``ALLOW_LIVE_ENV_VAR`` is kept as the canonical single name for callers/tests
+# that set one variable; it is the legacy name so existing units keep working.
 ALLOW_LIVE_ENV_VAR = "ALLOW_ALPACA_LIVE_TRADING"
 
 _BUY = "buy"
@@ -96,12 +100,13 @@ class Broker:
             self.paper = config.PAPER
         if not self.paper:
             # Fail closed: a live broker needs BOTH the explicit kwarg and the
-            # env gate. This module never wins the live-writer lock itself.
-            if not self.allow_live or not _env_flag(ALLOW_LIVE_ENV_VAR):
+            # env gate (any accepted broker-neutral name). This module never wins
+            # the live-writer lock itself.
+            if not self.allow_live or not config.live_trading_enabled():
                 raise LiveBrokerForbiddenError(
                     "Refusing to construct a LIVE broker: requires allow_live=True "
-                    f"AND {ALLOW_LIVE_ENV_VAR}=1. Live cutover is a separate, "
-                    "reviewed step (HARD RULE 2: exactly one live writer)."
+                    f"AND one of {config.LIVE_ENABLE_ENV_VARS}=1. Live cutover is a "
+                    "separate, reviewed step (HARD RULE 2: exactly one live writer)."
                 )
             logger.warning("[broker] LIVE broker constructed (gated) — no live "
                            "executor ships here; orders go to the injected executor.")

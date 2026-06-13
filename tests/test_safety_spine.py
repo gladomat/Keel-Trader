@@ -66,35 +66,38 @@ def test_death_spiral_guard():
     guard_sell_against_death_spiral("AAPL", "sell", 50.0)
 
     record_buy_price("AAPL", 100.0)
-    # Default intraday tol = 50 bps => floor 99.50.
-    assert DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS == 50.0
-    guard_sell_against_death_spiral("AAPL", "sell", 99.90)  # above floor => ok
-    assert raises_runtime(lambda: guard_sell_against_death_spiral("AAPL", "sell", 99.00)), \
-        "sell 50bps+ below buy must be refused"
+    # K3: single crypto tolerance = 300 bps => floor 97.00 (no equity regime).
+    assert DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS == 300.0
+    guard_sell_against_death_spiral("AAPL", "sell", 97.50)  # above floor => ok
+    assert raises_runtime(lambda: guard_sell_against_death_spiral("AAPL", "sell", 96.50)), \
+        "sell 300bps+ below buy must be refused"
 
     # Buys/holds are never guarded (guard is sell-only by design).
     guard_sell_against_death_spiral("AAPL", "buy", 1.0)
 
-    # Explicit per-call tolerance overrides regime selection.
+    # Explicit per-call tolerance still overrides the base.
     assert raises_runtime(lambda: guard_sell_against_death_spiral("AAPL", "sell", 99.85, tolerance_bps=10.0))
     guard_sell_against_death_spiral("AAPL", "sell", 99.95, tolerance_bps=10.0)  # within 10bps => ok
-    print("  ok  death-spiral guard: intraday floor refuses, sell-only, explicit tol")
+    print("  ok  death-spiral guard: 300bps crypto floor refuses, sell-only, explicit tol")
 
 
-def test_time_aware_regime():
+def test_volatility_aware_tolerance():
     forget_all_buys()
-    record_buy_price("MSFT", 100.0)
-    # Force the overnight regime (stale_after_seconds=0 => any buy is "stale").
-    # Overnight tol 500 bps => floor 95.00, so a 96.00 sell that the tight 50bps
-    # intraday rule would REFUSE is allowed under the overnight regime.
-    guard_sell_against_death_spiral(
-        "MSFT", "sell", 96.0, stale_after_seconds=0, stale_tolerance_bps=500.0
-    )
-    # Still refuses below the wide floor.
+    record_buy_price("SOL", 100.0)
+    # Base floor (300 bps) would REFUSE a sell at 96.0. But a volatile name with
+    # atr_pct=0.03 (3%) and the default 3x multiplier widens the floor to
+    # 9% below buy (91.00), so 96.0 is now allowed — vol-aware, never tightening.
+    guard_sell_against_death_spiral("SOL", "sell", 96.0, atr_pct=0.03)
+    # Still refuses below the widened floor.
     assert raises_runtime(lambda: guard_sell_against_death_spiral(
-        "MSFT", "sell", 94.0, stale_after_seconds=0, stale_tolerance_bps=500.0
-    ))
-    print("  ok  time-aware regime: overnight tolerance widens the floor")
+        "SOL", "sell", 90.0, atr_pct=0.03))
+    # A tiny ATR can never tighten below the base 300 bps floor (97.00).
+    assert raises_runtime(lambda: guard_sell_against_death_spiral(
+        "SOL", "sell", 96.5, atr_pct=0.0001))
+    # Legacy equity-regime kwargs are accepted and ignored (no crash).
+    guard_sell_against_death_spiral("SOL", "sell", 97.5,
+                                    stale_after_seconds=0, stale_tolerance_bps=500.0)
+    print("  ok  volatility-aware tolerance: ATR widens the floor, never tightens")
 
 
 def test_override_bypasses_guard():
@@ -144,9 +147,9 @@ def test_broker_buy_records_and_sell_is_guarded():
     broker.submit_order("NVDA", "buy", qty=10, price=100.0)
     assert len(exec_.filled) == 1 and exec_.filled[0].side == "buy"
 
-    # A sell well below the buy floor (50bps => 99.50) is REFUSED — and the
+    # A sell well below the buy floor (300bps => 97.00) is REFUSED — and the
     # executor never sees it (guard runs before execute).
-    assert raises_runtime(lambda: broker.submit_order("NVDA", "sell", qty=10, price=98.0))
+    assert raises_runtime(lambda: broker.submit_order("NVDA", "sell", qty=10, price=96.0))
     assert len(exec_.filled) == 1, "refused sell must not reach the executor"
 
     # A sell above the floor passes through the guard and executes.
@@ -177,6 +180,14 @@ def test_live_broker_construction_is_forbidden():
         assert gated.paper is False
     finally:
         os.environ.pop(ALLOW_LIVE_ENV_VAR, None)
+
+    # K3 broker-neutral alias: the KEEL_* name gates construction just the same.
+    os.environ["KEEL_ALLOW_LIVE_TRADING"] = "1"
+    try:
+        gated2 = Broker(paper=False, allow_live=True, executor=PaperExecutor())
+        assert gated2.paper is False
+    finally:
+        os.environ.pop("KEEL_ALLOW_LIVE_TRADING", None)
     print("  ok  live broker: fail-closed unless explicitly gated (no cutover here)")
 
 
@@ -205,7 +216,7 @@ if __name__ == "__main__":
     print("keel safety-spine golden tests:")
     test_paper_bypass()
     test_death_spiral_guard()
-    test_time_aware_regime()
+    test_volatility_aware_tolerance()
     test_override_bypasses_guard()
     test_inprocess_lock()
     test_broker_is_paper_by_default()
