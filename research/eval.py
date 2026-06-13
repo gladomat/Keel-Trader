@@ -10,9 +10,9 @@ Python reimplementation of fills). For a policy it:
   * uses production-realism defaults: ``decision_lag>=2``, binary fills, 26bps
     Kraken-taker fee, 5bps fill buffer, 6h max hold;
   * **fails fast** on bad policies: bails a cell early when a window breaches the
-    max-drawdown limit (0.20) or when the cell's median-monthly target has become
-    arithmetically unreachable;
-  * promotes only if the worst-cell **median monthly return >= 0.27**.
+    max-drawdown limit (0.30, crypto-recalibrated) or when the cell's
+    median-monthly target has become arithmetically unreachable;
+  * promotes only if the worst-cell **median monthly return >= 0.10** (crypto).
 
 "Unseen" is the caller's contract: pass a held-out ``.bin`` (or restrict the
 offset range via ``offset_lo_frac``/``offset_hi_frac``) so windows never overlap
@@ -34,10 +34,24 @@ from sim.keel_sim import MarketData, TradingEnv
 from research.policies import Policy
 
 # --- gate constants (the promotion contract) -------------------------------
-DEFAULT_SLIPPAGES_BPS: tuple[float, ...] = (0.0, 5.0, 10.0, 20.0)
-PROMOTION_TARGET_MEDIAN_MONTHLY = 0.27
-FAIL_FAST_MAX_DD = 0.20
-DEFAULT_WINDOW_STEPS = 720          # ~1 month at hourly bars
+# K4 (#14): crypto-recalibrated. These replace the equity-daily-rotation numbers
+# the gate was ported with. Rationale is documented in docs/KRAKEN_CALIBRATION.md;
+# they are PROVISIONAL pending the first real-data gate run on the Kraken .bin
+# (deps: ccxt/xgboost). The recalibration is NOT a blanket loosening — it is paired
+# with the harder 26bps taker fee (K3) and a wider slippage stress below.
+#
+# Slippage stress: Kraken spot market orders on the majors see wider adverse slip
+# than liquid equities, so the worst cell is pushed to 30bps (was 20).
+DEFAULT_SLIPPAGES_BPS: tuple[float, ...] = (0.0, 10.0, 20.0, 30.0)
+# Worst-cell median monthly a policy must clear to promote. 27%/mo at the worst
+# slippage cell after ~52bps round-trip crypto friction is not sustainable; 10%/mo
+# is an aggressive-but-defensible bar that still rejects mediocre policies.
+PROMOTION_TARGET_MEDIAN_MONTHLY = 0.10
+# Per-window max drawdown that fail-fasts a cell. Crypto pullbacks inside a ~1-month
+# window routinely exceed 20%, which would false-fail decent long-only books; 30%
+# tolerates normal crypto swings while still bailing on a genuine blow-up.
+FAIL_FAST_MAX_DD = 0.30
+DEFAULT_WINDOW_STEPS = 720          # ~1 month at hourly bars (24/7 crypto)
 BARS_PER_MONTH = 730.0             # 8760 / 12
 
 # --- production-realism env defaults ---------------------------------------

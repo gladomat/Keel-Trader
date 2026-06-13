@@ -12,7 +12,10 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data data-kraken clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data data-kraken gate-kraken backtest-kraken autoresearch-kraken clean
+
+# Real Kraken .bin the crypto judges run against (git-ignored; build via data-kraken).
+KRAKEN_BIN ?= sim/data/kraken_market.bin
 
 test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch ## run all golden fixtures (fill + safety + sim + features + gate + strategy + forecast + backtest + rl + autoresearch)
 
@@ -54,8 +57,19 @@ test-autoresearch: build-sim ## pin the autoresearch leaderboard (append-only, r
 data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored output)
 	PYTHONPATH=. $(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
 
-data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1, offline: needs network + ccxt)
-	PYTHONPATH=. $(PYTHON) sim/kraken_data.py --output sim/data/kraken_market.bin
+data-kraken: ## fetch REAL Kraken hourly OHLCV -> .bin (K1/K2, offline: needs network + ccxt)
+	PYTHONPATH=. $(PYTHON) sim/kraken_data.py --output $(KRAKEN_BIN)
+
+gate-kraken: build-sim ## run the crypto-retuned gate on the real Kraken .bin (K4, offline)
+	PYTHONPATH=. $(PYTHON) research/eval.py --data $(KRAKEN_BIN) --policy long
+
+backtest-kraken: build-sim ## backtest the XGB strategy through the gate on real Kraken data (K4)
+	PYTHONPATH=. $(PYTHON) models/xgb/backtest.py --data $(KRAKEN_BIN) \
+		--verdict-out artifacts/kraken_verdict.json
+
+autoresearch-kraken: build-sim ## run the autoresearch search loop on real Kraken data (K4)
+	PYTHONPATH=. $(PYTHON) research/autoresearch.py --data $(KRAKEN_BIN) \
+		--leaderboard artifacts/kraken_leaderboard.csv
 
 test-asan: ## same fixture under ASan/UBSan
 	$(CC) $(SAN) tests/test_fill_model.c -lm -o /tmp/keel_test_fill_asan

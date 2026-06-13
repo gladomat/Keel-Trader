@@ -43,6 +43,35 @@ def test_backtest_produces_real_verdict():
     print("ok test_backtest_produces_real_verdict")
 
 
+def test_backtest_five_symbol_universe():
+    """K4: the strategy/backtest seam handles the 5-symbol Kraken universe."""
+    with tempfile.TemporaryDirectory() as d:
+        data = Path(d) / "bt5.bin"
+        make_sample(data, num_symbols=5, num_timesteps=600, seed=7)
+        md = MarketData.load(data)
+        try:
+            assert md.num_symbols == 5
+            policy = make_strategy_policy(baseline_score_fn(), md.num_symbols,
+                                          md.features_per_sym, StrategyConfig())
+            from research.eval import TradingEnv
+            env = TradingEnv(md, max_steps=120, forced_offset=0, decision_lag=2)
+            obs = env.reset()
+            for _ in range(120):
+                a = policy(obs, env)
+                assert 0 <= a < env.num_actions, a
+                obs, _r, term = env.step(a)
+                if term:
+                    break
+            env.free()
+        finally:
+            md.free()
+        # And a full verdict comes out of the real judge on 5 symbols.
+        verdict = run_backtest(data, n_windows=4, window_steps=120, seed=0,
+                               fail_fast=False)
+        assert math.isfinite(verdict.worst_cell_median_monthly)
+    print("ok test_backtest_five_symbol_universe")
+
+
 def test_strategy_policy_emits_valid_actions():
     with tempfile.TemporaryDirectory() as d:
         data = Path(d) / "bt.bin"
@@ -108,6 +137,7 @@ def test_paper_runner_refuses_death_spiral_sell():
 
 if __name__ == "__main__":
     test_backtest_produces_real_verdict()
+    test_backtest_five_symbol_universe()
     test_strategy_policy_emits_valid_actions()
     test_paper_runner_is_paper_only()
     test_paper_runner_refuses_death_spiral_sell()

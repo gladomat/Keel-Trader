@@ -20,6 +20,8 @@ from pathlib import Path
 from research import policies as P
 from research.eval import (
     DEFAULT_FEE_RATE,
+    DEFAULT_SLIPPAGES_BPS,
+    FAIL_FAST_MAX_DD,
     PROMOTION_TARGET_MEDIAN_MONTHLY,
     evaluate,
     run_window,
@@ -71,6 +73,14 @@ def test_crypto_fee_default():
     print("ok test_crypto_fee_default")
 
 
+def test_crypto_gate_constants():
+    """K4: the crypto-retuned promotion contract is pinned (rationale in docs)."""
+    assert abs(PROMOTION_TARGET_MEDIAN_MONTHLY - 0.10) < 1e-12
+    assert abs(FAIL_FAST_MAX_DD - 0.30) < 1e-12
+    assert DEFAULT_SLIPPAGES_BPS == (0.0, 10.0, 20.0, 30.0)
+    print("ok test_crypto_gate_constants")
+
+
 def test_fill_parity_guard():
     """The gate's C fill path must equal the golden fixture, cell-for-cell."""
     for buf, slip, exp_fill, exp_entry, exp_cost in _GOLDEN_FILL:
@@ -105,6 +115,7 @@ def test_fail_fast_triggers_early():
 if __name__ == "__main__":
     test_flat_policy_zero_return_and_rejected()
     test_crypto_fee_default()
+    test_crypto_gate_constants()
     test_fill_parity_guard()
     test_fail_fast_triggers_early()
     print("all gate tests passed")
