@@ -12,7 +12,7 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch test-kraken-paper test-kraken-executor build-sim data data-kraken gate-kraken backtest-kraken autoresearch-kraken paper-kraken clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch test-kraken-paper test-kraken-executor build-sim data data-kraken build-cache-kraken finetune-kraken train-kraken gate-kraken backtest-kraken autoresearch-kraken paper-kraken feature-search walkforward clean
 
 # Real Kraken .bin the crypto judges run against (git-ignored; build via data-kraken).
 KRAKEN_BIN ?= sim/data/kraken_market.bin
@@ -90,6 +90,12 @@ autoresearch-kraken: build-sim ## run the autoresearch search loop on real Krake
 
 paper-kraken: build-sim ## live-data PAPER trading vs Kraken — no real orders (K5, offline: needs ccxt)
 	PYTHONPATH=. $(PYTHON) -m core.kraken_paper --ticks 24 --sleep 3600
+
+feature-search: build-sim ## sweep signal feature x sign x config through the gate (research; see docs/CRYPTO_RESEARCH_FINDINGS.md)
+	PYTHONPATH=. $(PYTHON) -m research.feature_search --data $(KRAKEN_BIN)
+
+walkforward: build-sim ## walk-forward a signal across consecutive OOS folds (regime test)
+	PYTHONPATH=. $(PYTHON) -m research.walkforward --data $(KRAKEN_BIN)
 
 test-asan: ## same fixture under ASan/UBSan
 	$(CC) $(SAN) tests/test_fill_model.c -lm -o /tmp/keel_test_fill_asan

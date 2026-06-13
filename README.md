@@ -28,15 +28,23 @@ safety spine is the crown jewel; the goal is low-drawdown, smooth-Sortino PnL).
 ## Layout (target shape)
 
 ```
-core/       safety spine (singleton lock + death-spiral guard) + config            [done: guard ported]
-sim/        the ONE fill engine (binary-fill C core) + .bin data format            [done: ported]
-forecast/   one LoRA forecaster + parquet cache                                    [pending]
-models/     the incumbent (xgb daily) + one RL track                              [pending]
-research/   autoresearch loop + config-driven sweeps + append-only leaderboards    [pending]
-ops/        deploy (lock-verifying) + prod docs                                    [pending]
-docs/       carried-over knowledge base (the moray deep-dive)                      [done]
-tests/      golden fixtures (fill model + safety spine pinned)                      [done]
+core/       safety spine (singleton lock + death-spiral guard) + config + paper loop   [done]
+sim/        the ONE fill engine (binary-fill C core) + .bin format + Kraken adapter    [done]
+forecast/   Chronos-2 forecaster (zero-shot + LoRA) + technical features + cache        [done]
+models/     the incumbent (xgb daily) + one RL track                                    [done]
+research/   gate + autoresearch + signal sweep + walk-forward validator                 [done]
+ops/        deploy (lock-verifying) + prod docs                                         [done]
+docs/       carried-over knowledge base + Kraken calibration + research findings        [done]
+tests/      golden fixtures (fill + safety + features + gate + paper + ...) pinned       [done]
 ```
+
+**Kraken (crypto) track + research:** the full chain (data → Chronos-2 forecasts →
+features → gate → autoresearch → walk-forward → paper) is built and validated.
+Honest outcome: **no robust tradeable edge** found in the 5 USD majors — see
+[`docs/CRYPTO_RESEARCH_FINDINGS.md`](docs/CRYPTO_RESEARCH_FINDINGS.md) (and
+[`docs/KRAKEN_CALIBRATION.md`](docs/KRAKEN_CALIBRATION.md) for the forecast/gate
+calibration). Offline run targets: `make data-kraken build-cache-kraken
+train-kraken gate-kraken feature-search walkforward paper-kraken`.
 
 ## Build / test
 
