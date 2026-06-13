@@ -23,6 +23,22 @@ champion. Update it in the same commit that changes the live state.
 When a champion is promoted, fill the table above and record its scores under
 [Marketsim / gate scores](#marketsim--gate-scores).
 
+### Kraken venue (K-track)
+
+The active venue is **Kraken spot** (5 USD majors, hourly; see
+`docs/KRAKEN_CALIBRATION.md`). The live-writer account/lock identity is reused
+unchanged (`alpaca_live_writer`); only the executor differs.
+
+- **K6 live executor is STAGED but DISABLED.** `core/kraken_executor.py` exists
+  and is fail-closed (construction requires `allow_live=True` **and**
+  `KEEL_ALLOW_LIVE_TRADING=1`), but it is **not wired**: `LIVE_WRITER_UNITS` is
+  still empty, no live entry point imports it, and no Kraken API keys are on the
+  box. Enabling it is a **HITL-only** step gated on a clean K5 paper run — do the
+  6-step checklist below in the same reviewed commit that wires it.
+- **K5 paper trading** runs with `make paper-kraken` (public data, no orders) and
+  writes a paper ledger under `strategy_state/kraken_paper/`. Review a meaningful
+  window before any live decision.
+
 ## Deploy commands
 
 The deploy script is **dry-run by default** and fails closed on the live path.
