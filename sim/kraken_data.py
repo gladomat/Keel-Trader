@@ -13,14 +13,17 @@ Boundaries (keel guardrails):
   - Writes through the ONE shared packer ``sim/binpack.write_market_bin`` so the
     byte layout matches every other producer/consumer of the ``.bin``.
 
-Feature block: the prices block is the real OHLCV; the feature block is written as
-**zeros** (a documented placeholder, ``FEATURES_PER_SYM`` wide in the exact
-``forecast.features.FEATURE_SPEC`` order). K2 (#12) replaces these zeros with the
-real Chronos2 forecast + technical features. Until then the gate/backtest run on
-price action with neutral features — honest, not silently fabricated.
+Feature block (K2, #12): the prices block is the real OHLCV; the feature block
+carries the full ``forecast.features.FEATURE_SPEC``:
+  - technical features (indices 8-15) computed directly from the bars via the
+    pure ``forecast.technical`` definition;
+  - forecast features (indices 0-7) joined from the Chronos2 parquet cache when
+    ``--forecast-cache`` is given (offline, needs pandas); otherwise left as
+    honest zeros (a neutral, NOT a fabricated forecast).
 
 Run:   make data-kraken
-   or: PYTHONPATH=. python3 sim/kraken_data.py --output sim/data/kraken_market.bin
+   or: PYTHONPATH=. python3 sim/kraken_data.py --output sim/data/kraken_market.bin \
+                                                --forecast-cache <cache_root>
 """
 from __future__ import annotations
 
@@ -33,7 +36,8 @@ from pathlib import Path
 import numpy as np
 
 # The ONE feature spec (count + ordering) and the ONE byte packer.
-from forecast.features import FEATURES_PER_SYM
+from forecast.features import FEATURE_SPEC, FEATURES_PER_SYM
+from forecast.technical import TECHNICAL_FEATURES, technical_features
 from sim.binpack import PRICE_FEATURES, read_header, write_market_bin
 
 # Locked universe (see Muninn "keel_trader Kraken build decisions"): the 5 USD
@@ -216,24 +220,108 @@ def align_to_grid(series: dict, symbols: list[str]) -> tuple[list[str], list[int
 
 
 # --------------------------------------------------------------------------- #
+# Features (K2, #12)                                                           #
+# --------------------------------------------------------------------------- #
+# Where the technical block starts inside each symbol's feature vector (8 with
+# the v1 spec). Derived from the spec so a versioned reorder can't desync it.
+_TECH_START = FEATURE_SPEC.index(TECHNICAL_FEATURES[0])
+_FORECAST_NAMES = FEATURE_SPEC.names_of_kind("forecast")
+
+
+def build_feature_block(prices: np.ndarray, kept_symbols: list[str],
+                        grid_ts_ms: list[int],
+                        forecast_cache_root: Path | None = None) -> np.ndarray:
+    """Build the [T][S][FEATURES_PER_SYM] feature block for the Kraken ``.bin``.
+
+    - Technical features (spec indices 8-15) are computed directly from the
+      aligned OHLCV grid via the pure ``forecast.technical`` definition.
+    - Forecast features (0-7) are joined from the Chronos2 cache when
+      ``forecast_cache_root`` is given (offline, needs pandas); otherwise they
+      stay zero — an honest neutral, NOT a fabricated forecast. Build the cache
+      first (``forecast/build_cache.py``) to populate them.
+    """
+    n_t, n_s = prices.shape[0], prices.shape[1]
+    feats = np.zeros((n_t, n_s, FEATURES_PER_SYM), dtype=np.float32)
+
+    width = len(TECHNICAL_FEATURES)
+    for s in range(n_s):
+        o = prices[:, s, 0].tolist()
+        h = prices[:, s, 1].tolist()
+        low = prices[:, s, 2].tolist()
+        c = prices[:, s, 3].tolist()
+        tech = technical_features(o, h, low, c)  # [T][8] in spec technical order
+        for t in range(n_t):
+            feats[t, s, _TECH_START:_TECH_START + width] = tech[t]
+
+    if forecast_cache_root is not None:
+        _join_forecast_features(feats, prices, kept_symbols, grid_ts_ms,
+                                Path(forecast_cache_root))
+    return feats
+
+
+def _join_forecast_features(feats: np.ndarray, prices: np.ndarray,
+                            kept_symbols: list[str], grid_ts_ms: list[int],
+                            cache_root: Path) -> None:
+    """Join Chronos2 forecast features (spec indices 0-7) from the parquet cache.
+
+    Offline only (pandas). The forecast columns are computed through the SAME
+    definition the equity path uses (``sim/export_data.compute_features``) so the
+    forecast math has one source. The cache's leakage invariant was enforced when
+    it was written (``forecast/build_cache.assert_no_leakage``); here we only do
+    an equal-timestamp join (attach the forecast anchored at bar ``t`` onto bar
+    ``t``), which never pulls the future in.
+    """
+    import pandas as pd
+
+    from forecast.build_cache import assert_features_in_spec
+    from sim.export_data import compute_features, load_forecast
+
+    assert_features_in_spec()  # forecast names still land in the ONE spec
+    idx = pd.to_datetime(grid_ts_ms, unit="ms", utc=True)
+    fc_cols = list(_FORECAST_NAMES)
+
+    for s, sym in enumerate(kept_symbols):
+        try:
+            fc_h1 = load_forecast(sym, cache_root, 1)
+            fc_h24 = load_forecast(sym, cache_root, 24)
+        except FileNotFoundError as exc:
+            print(f"  [forecast] no cache for {sym}: {exc} — leaving forecast=0")
+            continue
+        price_df = pd.DataFrame(
+            {
+                "open": prices[:, s, 0], "high": prices[:, s, 1],
+                "low": prices[:, s, 2], "close": prices[:, s, 3],
+                "volume": prices[:, s, 4],
+            },
+            index=idx,
+        )
+        full = compute_features(price_df, fc_h1, fc_h24)  # 16 cols, spec order
+        fc = full[fc_cols].fillna(0.0).to_numpy(dtype=np.float32)
+        feats[:, s, 0:len(fc_cols)] = fc
+        print(f"  [forecast] {sym}: joined {len(fc_cols)} forecast features")
+
+
+# --------------------------------------------------------------------------- #
 # Write                                                                        #
 # --------------------------------------------------------------------------- #
-def build_bin(series: dict, symbols: list[str], output: Path) -> Path:
+def build_bin(series: dict, symbols: list[str], output: Path,
+              forecast_cache_root: Path | None = None) -> Path:
     kept, grid, prices = align_to_grid(series, symbols)
     n_t, n_s = len(grid), len(kept)
 
-    # Feature block = zeros placeholder until K2 (#12) fills the real FEATURE_SPEC
-    # values. Shape/order match the spec so the .bin is already K2-ready.
-    features = np.zeros((n_t, n_s, FEATURES_PER_SYM), dtype=np.float32)
+    # Full FEATURE_SPEC: technical (8-15) from the bars, forecast (0-7) from the
+    # Chronos cache when present (else honest zeros).
+    features = build_feature_block(prices, kept, grid, forecast_cache_root)
 
     write_market_bin(
         output, kept, features, prices,
         num_timesteps=n_t, features_per_sym=FEATURES_PER_SYM, version=VERSION,
     )
     size = output.stat().st_size
+    fc_state = "real (Chronos cache)" if forecast_cache_root else "zeros (no cache)"
     print(f"  wrote {output} ({size:,} bytes): {n_s} symbols x {n_t} hourly bars")
     print(f"  symbols: {kept}")
-    print(f"  features: ZEROS placeholder ({FEATURES_PER_SYM}/sym) — filled by K2 (#12)")
+    print(f"  features: technical 8-15 computed; forecast 0-7 = {fc_state}")
     return output
 
 
@@ -266,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="Deep-history source beyond Kraken REST's ~720-bar window")
     ap.add_argument("--backfill-dir", default="sim/data/kraken_csv",
                     help="Directory of Kraken OHLCVT CSV dumps (--backfill kraken-csv)")
+    ap.add_argument("--forecast-cache", default=None,
+                    help="Chronos2 forecast cache root (h1/h24 parquet) to join "
+                         "forecast features 0-7; omit to leave them zero")
     args = ap.parse_args(argv)
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -285,7 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     sources.append(fetch_kraken(symbols, since_ms))
 
     series = merge_series(*sources)
-    build_bin(series, symbols, output)
+    fc_root = Path(args.forecast_cache) if args.forecast_cache else None
+    build_bin(series, symbols, output, forecast_cache_root=fc_root)
 
     # Sanity: the file we just wrote must parse through the shared reader.
     hdr = read_header(output)
