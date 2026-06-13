@@ -36,8 +36,8 @@ from core.broker import Broker, PaperExecutor
 from core.kraken_feed import Bar
 from forecast.technical import technical_features
 from models.xgb.strategy import StrategyConfig, SymbolSignal, decide
-from research.eval import DEFAULT_FILL_BUFFER_BPS
-from sim.keel_sim import roundtrip_cost
+from research.eval import DEFAULT_FEE_RATE, DEFAULT_FILL_BUFFER_BPS
+from sim.keel_sim import fill_price
 
 logger = logging.getLogger("keel.kraken_paper")
 
@@ -98,6 +98,7 @@ class KrakenPaperTrader:
     equity: float = 10_000.0
     slippage_bps: float = 10.0
     fill_buffer_bps: float = DEFAULT_FILL_BUFFER_BPS
+    fee_rate: float = DEFAULT_FEE_RATE   # per-leg taker fee (Kraken ~26 bps, K3)
     history: int = 128
 
     _bars: Dict[str, Deque] = field(default_factory=lambda: defaultdict(deque))
@@ -148,47 +149,72 @@ class KrakenPaperTrader:
             snap = snapshot.get(sym)
             if snap is None:
                 continue
-            price = snap["price"]
-            qty = self._held[sym]["qty"]
-            # SAME guarded write surface the live path uses (death-spiral check).
-            self.broker.submit_order(sym, "sell", qty, price)
-            events.append(self._simulate_exit(sym, snap["bar"], price))
+            ev = self._simulate_exit(sym, snap["bar"], self._exec_price(snap))
+            if ev is not None:
+                events.append(ev)
 
         # Enter desired names — guarded buys (records the buy price for the guard).
         for sym, weight in targets.items():
             if sym in self._held:
                 continue
             snap = snapshot[sym]
-            price = snap["price"]
+            price = self._exec_price(snap)
             if price <= 0:
                 continue
             qty = weight * self.equity / price
-            self.broker.submit_order(sym, "buy", qty, price)
-            events.append(self._simulate_entry(sym, qty, snap["bar"], price))
+            ev = self._simulate_entry(sym, qty, snap["bar"], price)
+            if ev is not None:
+                events.append(ev)
 
         self._persist(events)
         self.fills.extend(events)
         return events
 
+    @staticmethod
+    def _exec_price(snap: dict) -> float:
+        """The price a decision transacts at: the just-CLOSED bar's close.
+
+        The C fill engine is a limit-within-bar model, so the executable
+        reference is the bar we fill against (matches the gate's fill-off-the-bar
+        semantics + decision lag), not the mid-forming-hour live ticker. The live
+        ``price`` is kept in the snapshot only as a freshness signal.
+        """
+        return float(snap["bar"].close)
+
     # --- C-engine fill simulation (the ONE fill model) ---------------------- #
-    def _simulate_entry(self, sym: str, qty: float, bar: Bar, price: float) -> PaperFill:
-        _sell_fill, entry_fill, _cost = roundtrip_cost(
-            bar.open, bar.high, bar.low, bar.close,
-            self.fill_buffer_bps, self.slippage_bps,
-        )
+    def _fill(self, bar: Bar, target: float, is_buy: bool) -> float:
+        """C-engine fill at ``target`` against the bar; 0.0 if it cannot fill."""
+        return fill_price(bar.open, bar.high, bar.low, bar.close, target,
+                          self.fill_buffer_bps, self.slippage_bps, is_buy)
+
+    def _simulate_entry(self, sym: str, qty: float, bar: Bar,
+                        price: float) -> Optional[PaperFill]:
+        entry_fill = self._fill(bar, price, is_buy=True)
+        if entry_fill <= 0.0:
+            logger.info("[kraken-paper] no entry fill for %s @ %.4f (gapped/slipped "
+                        "out of bar) — skipping", sym, price)
+            return None
+        # Guard FIRST (records the buy price for the death-spiral floor).
+        self.broker.submit_order(sym, "buy", qty, price)
         self._held[sym] = {"qty": qty, "entry_fill": entry_fill}
         return PaperFill(time.time(), sym, "buy", qty, price, entry_fill)
 
-    def _simulate_exit(self, sym: str, bar: Bar, price: float) -> PaperFill:
-        sell_fill, _entry, cost = roundtrip_cost(
-            bar.open, bar.high, bar.low, bar.close,
-            self.fill_buffer_bps, self.slippage_bps,
-        )
+    def _simulate_exit(self, sym: str, bar: Bar,
+                       price: float) -> Optional[PaperFill]:
+        sell_fill = self._fill(bar, price, is_buy=False)
+        if sell_fill <= 0.0:
+            logger.info("[kraken-paper] no exit fill for %s @ %.4f — staying held",
+                        sym, price)
+            return None
+        qty = self._held[sym]["qty"]
+        # SAME guarded write surface the live path uses; a death-spiral sell raises.
+        self.broker.submit_order(sym, "sell", qty, price)
         held = self._held.pop(sym)
-        qty, entry_fill = held["qty"], held["entry_fill"]
-        # cost is the round-trip friction in bps (matches tests/test_fill_model.c).
-        friction = qty * entry_fill * (cost / 10000.0)
-        net = qty * (sell_fill - entry_fill) - friction
+        entry_fill = held["entry_fill"]
+        # Slippage is already in entry_fill/sell_fill (C engine); apply the taker
+        # fee on both legs (the same DEFAULT_FEE_RATE the gate prices).
+        fee = self.fee_rate * qty * (entry_fill + sell_fill)
+        net = qty * (sell_fill - entry_fill) - fee
         self.realized_pnl += net
         return PaperFill(time.time(), sym, "sell", qty, price, sell_fill, net)
 

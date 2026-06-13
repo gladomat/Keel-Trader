@@ -90,6 +90,8 @@ def _load() -> ctypes.CDLL:
     lib.keel_test_roundtrip_cost.argtypes = [
         c_f, c_f, c_f, c_f, c_f, c_f, ctypes.POINTER(c_f), ctypes.POINTER(c_f)
     ]
+    lib.keel_test_fill_price.restype = c_f
+    lib.keel_test_fill_price.argtypes = [c_f, c_f, c_f, c_f, c_f, c_f, c_f, c_i]
 
     _lib = lib
     return lib
@@ -241,3 +243,16 @@ def roundtrip_cost(o: float, h: float, l: float, c: float,
         o, h, l, c, buffer_bps, slip_bps, ctypes.byref(entry), ctypes.byref(cost)
     )
     return float(fill), float(entry.value), float(cost.value)
+
+
+def fill_price(o: float, h: float, l: float, c: float, target: float,
+               buffer_bps: float, slip_bps: float, is_buy: bool) -> float:
+    """Resolve a limit fill at ``target`` against one OHLC bar via the C engine.
+
+    Returns the C-resolved fill price, or ``0.0`` when the bar cannot fill the
+    order (market gapped away / slipped out of range). Same arithmetic the gate
+    and training sim use — the ONE fill engine — so the live paper loop never
+    introduces a second/soft fill model.
+    """
+    return float(_load().keel_test_fill_price(
+        o, h, l, c, target, buffer_bps, slip_bps, 1 if is_buy else 0))

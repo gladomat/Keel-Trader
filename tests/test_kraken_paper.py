@@ -92,6 +92,22 @@ def test_buy_then_sell_fills_through_c_and_persists():
     print("ok test_buy_then_sell_fills_through_c_and_persists")
 
 
+def test_no_fill_when_bar_cannot_fill():
+    """The C engine is a limit-within-bar model: if a buy slips out of the bar's
+    range it does NOT fill — and the loop must skip it, never book a phantom 0.0."""
+    forget_all_buys()
+    trader = KrakenPaperTrader(
+        score_fn=lambda sym, bars: (0.5, 0.02),
+        ledger_path=os.path.join(os.environ["STATE_DIR"], "nf.jsonl"),
+    )
+    # close == high: a buy at close slips above the bar high -> C returns no-fill.
+    snap = {"XRP/USD": {"bar": Bar(100.0, 100.0, 99.0, 100.0, 1000.0, 1), "price": 100.0}}
+    events = trader.step(snap)
+    assert events == [], events
+    assert "XRP/USD" not in trader._held
+    print("ok test_no_fill_when_bar_cannot_fill")
+
+
 def test_death_spiral_sell_refused():
     forget_all_buys()
     scores = {"ETH/USD": 0.5}
@@ -110,5 +126,6 @@ def test_death_spiral_sell_refused():
 if __name__ == "__main__":
     test_paper_only_no_live_surface()
     test_buy_then_sell_fills_through_c_and_persists()
+    test_no_fill_when_bar_cannot_fill()
     test_death_spiral_sell_refused()
     print("all kraken-paper tests passed")

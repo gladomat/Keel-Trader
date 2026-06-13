@@ -216,3 +216,32 @@ KEEL_API float keel_test_roundtrip_cost(float o, float h, float l, float c,
     if (out_cost)  *out_cost = cost;
     return fill;
 }
+
+/* Resolve a limit fill at an ARBITRARY target price against one OHLC bar, using
+ * the SAME resolve_limit_fill_price arithmetic the gate/sim use. Returns the
+ * fill price, or 0.0 if the bar cannot fill the order (market gapped away /
+ * slipped out of range). Used by the K5 live paper loop so paper fills come from
+ * the ONE C fill engine — no second/soft Python fill model. */
+KEEL_API float keel_test_fill_price(float o, float h, float l, float c,
+                                    float target, float buffer_bps, float slip_bps,
+                                    int is_buy) {
+    MarketData md;
+    memset(&md, 0, sizeof(md));
+    float prices[PRICE_FEATS] = {o, h, l, c, 1000.0f};
+    float feats[FEATURES_PER_SYM] = {0};
+    md.num_symbols = 1; md.num_timesteps = 1; md.features_per_sym = FEATURES_PER_SYM;
+    md.prices = prices; md.features = feats;
+
+    TradingEnv env;
+    memset(&env, 0, sizeof(env));
+    env.data = &md; env.fee_rate = 0.001f; env.max_leverage = 1.0f;
+    env.fill_buffer_bps = buffer_bps; env.fill_slippage_bps = slip_bps;
+    env.action_allocation_bins = 1; env.action_level_bins = 1;
+    env.agent.cash = INITIAL_CASH; env.agent.position_sym = -1;
+
+    float fill = 0.0f;
+    if (!resolve_limit_fill_price(&env, &md, 0, 0, target, is_buy, &fill)) {
+        return 0.0f;
+    }
+    return fill;
+}
