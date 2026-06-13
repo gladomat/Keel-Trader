@@ -12,9 +12,9 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl build-sim data clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch build-sim data clean
 
-test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl ## run all golden fixtures (fill + safety + sim + features + gate + strategy + forecast + backtest/paper + rl)
+test: test-fill test-safety test-sim test-features test-gate test-strategy test-forecast test-backtest test-rl test-autoresearch ## run all golden fixtures (fill + safety + sim + features + gate + strategy + forecast + backtest + rl + autoresearch)
 
 test-fill: ## pin the single fill engine against its golden values
 	$(CC) $(CFLAGS) tests/test_fill_model.c -lm -o /tmp/keel_test_fill
@@ -47,6 +47,9 @@ test-backtest: build-sim ## pin the gate backtest verdict + paper-only decision 
 
 test-rl: build-sim ## pin the RL policy -> gate seam (no second sim) + GAE
 	PYTHONPATH=. $(PYTHON) tests/test_rl_policy.py
+
+test-autoresearch: build-sim ## pin the autoresearch leaderboard (append-only, reproducible, gate-honest)
+	PYTHONPATH=. $(PYTHON) tests/test_autoresearch.py
 
 data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored output)
 	PYTHONPATH=. $(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
