@@ -15,9 +15,11 @@ data/
 strategy_state/
 *.lock
 
-# checkpoints / leaderboards are run outputs
+# checkpoints / leaderboards / forecast cache / verdicts are run outputs
 checkpoints/
 *_leaderboard.csv
+forecast/cache/
+artifacts/
 
 # deploy run output (append-only history written by ops/deploy_live_trader.sh)
 ops/deploy_history.log

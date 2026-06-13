@@ -32,16 +32,26 @@ sim. They are **not** part of `make test` (which stays synthetic + stdlib-only).
 make build-sim
 pip install ccxt xgboost pandas numpy          # + torch/transformers/peft for forecasts
 
-# 1. fetch real Kraken hourly OHLCV -> .bin (full feature block; K1+K2)
-make data-kraken
-#   add forecasts once a Chronos cache exists:
-#   python3 sim/kraken_data.py --output sim/data/kraken_market.bin --forecast-cache <cache_root>
+# 1. build the Chronos-2 forecast cache on Kraken bars (offline, MPS; ~20 min)
+#    fetches 120d hourly OHLCV (Kraken public + Binance deep-history backfill),
+#    runs Chronos-2 inference, writes h1/h24 parquet under forecast/cache/kraken.
+make build-cache-kraken
 
-# 2. run the gate + backtest + autoresearch on the real .bin (K4)
+# 2. fetch real OHLCV -> .bin and JOIN the forecasts (full FEATURE_SPEC; K1+K2)
+python3 -m sim.kraken_data --days 120 --backfill binance \
+        --forecast-cache forecast/cache/kraken --output sim/data/kraken_market.bin
+#   (without --forecast-cache, forecast features 0-7 stay honest zeros)
+
+# 3. run the gate + backtest + autoresearch on the real .bin (K4)
 make gate-kraken
 make backtest-kraken
 make autoresearch-kraken
 ```
+
+> Verified end-to-end (2026-06-13): cache built (2369 rows/sym/horizon over 120d),
+> forecasts 0-7 joined and non-zero, gate runs on real forecasts. The reference /
+> baseline policies are honestly REJECTED (fail-fast on >30% drawdown over the
+> 120-day window) — promotion needs a real trained champion, not a baseline.
 
 Record each promoted champion's evidence in `ops/prod.md` (append, never
 overwrite). A champion may only go to K6 (live) after it clears this gate on
