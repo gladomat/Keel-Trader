@@ -61,12 +61,8 @@ def read_header(path) -> dict:
             "features_per_sym": fps, "price_features": pf}
 
 
-def read_features(path):
-    """Pure-Python read-back of the feature block as nested lists [T][S][F]."""
-    hdr = read_header(path)
-    ns, nt, fps = hdr["num_symbols"], hdr["num_timesteps"], hdr["features_per_sym"]
-    offset = HEADER_SIZE + ns * SYM_NAME_LEN
-    count = nt * ns * fps
+def _read_block(path, offset, nt, ns, per):
+    count = nt * ns * per
     with open(path, "rb") as fh:
         fh.seek(offset)
         flat = struct.unpack(f"<{count}f", fh.read(count * 4))
@@ -75,7 +71,37 @@ def read_features(path):
     for _ in range(nt):
         row = []
         for _ in range(ns):
-            row.append(list(flat[i:i + fps]))
-            i += fps
+            row.append(list(flat[i:i + per]))
+            i += per
         out.append(row)
     return out
+
+
+def read_features(path):
+    """Pure-Python read-back of the feature block as nested lists [T][S][F]."""
+    hdr = read_header(path)
+    ns, nt, fps = hdr["num_symbols"], hdr["num_timesteps"], hdr["features_per_sym"]
+    offset = HEADER_SIZE + ns * SYM_NAME_LEN
+    return _read_block(path, offset, nt, ns, fps)
+
+
+def read_prices(path):
+    """Pure-Python read-back of the OHLCV price block as nested lists [T][S][5]."""
+    hdr = read_header(path)
+    ns, nt, fps, pf = (hdr["num_symbols"], hdr["num_timesteps"],
+                       hdr["features_per_sym"], hdr["price_features"])
+    offset = HEADER_SIZE + ns * SYM_NAME_LEN + nt * ns * fps * 4
+    return _read_block(path, offset, nt, ns, pf)
+
+
+def read_symbols(path):
+    """Read the symbol-name table as a list of ASCII strings."""
+    hdr = read_header(path)
+    ns = hdr["num_symbols"]
+    with open(path, "rb") as fh:
+        fh.seek(HEADER_SIZE)
+        names = []
+        for _ in range(ns):
+            raw = fh.read(SYM_NAME_LEN)
+            names.append(raw.split(b"\x00", 1)[0].decode("ascii"))
+    return names
