@@ -51,6 +51,10 @@ def _load() -> ctypes.CDLL:
     for fn in ("keel_md_num_symbols", "keel_md_num_timesteps", "keel_md_features_per_sym"):
         getattr(lib, fn).restype = c_i
         getattr(lib, fn).argtypes = [c_vp]
+    lib.keel_md_feature.restype = c_f
+    lib.keel_md_feature.argtypes = [c_vp, c_i, c_i, c_i]
+    lib.keel_md_price.restype = c_f
+    lib.keel_md_price.argtypes = [c_vp, c_i, c_i, c_i]
 
     lib.keel_env_create.restype = c_vp
     lib.keel_env_create.argtypes = [c_vp]
@@ -113,6 +117,12 @@ class MarketData:
         if not ptr:
             raise RuntimeError(f"Failed to load market data from {data_path}")
         return cls(ptr)
+
+    def feature(self, t: int, s: int, f: int) -> float:
+        return float(_load().keel_md_feature(self._ptr, t, s, f))
+
+    def price(self, t: int, s: int, p: int) -> float:
+        return float(_load().keel_md_price(self._ptr, t, s, p))
 
     def free(self) -> None:
         if self._ptr:

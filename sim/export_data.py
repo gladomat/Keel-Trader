@@ -36,7 +36,6 @@ Binary format:
 """
 
 import argparse
-import struct
 import sys
 from pathlib import Path
 from typing import Optional
@@ -44,8 +43,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-FEATURES_PER_SYM = 16
-PRICE_FEATURES = 5
+# Single source of truth for the feature set + ordering (keel invariant #3).
+from forecast.features import FEATURE_NAMES, FEATURES_PER_SYM
+from sim.binpack import PRICE_FEATURES, write_market_bin
+
 MAGIC = b"MKTD"
 VERSION = 1
 
@@ -149,15 +150,8 @@ def compute_features(price_df: pd.DataFrame, fc_h1: pd.DataFrame, fc_h24: pd.Dat
     roll_max = close.rolling(72, min_periods=1).max()
     feat["drawdown_72h"] = ((close - roll_max) / roll_max.clip(lower=1e-8)).clip(-1.0, 0.0)
 
-    # Fill NaN and ensure column order
-    expected_cols = [
-        "chronos_close_delta_h1", "chronos_high_delta_h1", "chronos_low_delta_h1",
-        "chronos_close_delta_h24", "chronos_high_delta_h24", "chronos_low_delta_h24",
-        "forecast_confidence_h1", "forecast_confidence_h24",
-        "return_1h", "return_24h", "volatility_24h",
-        "ma_delta_24h", "ma_delta_72h", "atr_pct_24h",
-        "trend_72h", "drawdown_72h",
-    ]
+    # Fill NaN and ensure column order — the ONE feature spec is the source of truth.
+    expected_cols = FEATURE_NAMES
     for col in expected_cols:
         if col not in feat.columns:
             feat[col] = 0.0
@@ -245,32 +239,11 @@ def export_binary(
         feature_arr[:, si, :] = f.values.astype(np.float32)
         price_arr[:, si, :] = p.values.astype(np.float32)
 
-    # Write binary file
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        # Header (64 bytes)
-        header = struct.pack(
-            "<4sIIIII40s",
-            MAGIC,
-            VERSION,
-            num_symbols,
-            num_timesteps,
-            FEATURES_PER_SYM,
-            PRICE_FEATURES,
-            b"\x00" * 40,
-        )
-        f.write(header)
-
-        # Symbol table
-        for sym in valid_symbols:
-            name_bytes = sym.encode("ascii")[:15].ljust(16, b"\x00")
-            f.write(name_bytes)
-
-        # Feature data
-        f.write(feature_arr.tobytes())
-
-        # Price data
-        f.write(price_arr.tobytes())
+    # Write binary file through the ONE shared MKTD packer (sim/binpack.py).
+    write_market_bin(
+        output_path, valid_symbols, feature_arr, price_arr,
+        num_timesteps=num_timesteps, features_per_sym=FEATURES_PER_SYM, version=VERSION,
+    )
 
     total_size = output_path.stat().st_size
     print(f"  Written {total_size:,} bytes ({total_size / 1024:.1f} KB)")

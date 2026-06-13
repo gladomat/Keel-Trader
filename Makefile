@@ -12,9 +12,9 @@ PYTHON ?= python3
 SIM_SO  := sim/libkeelsim.so
 SOFLAGS := -O2 -fPIC -shared -Wall -Isim
 
-.PHONY: test test-fill test-safety test-asan test-sim build-sim data clean
+.PHONY: test test-fill test-safety test-asan test-sim test-features build-sim data clean
 
-test: test-fill test-safety test-sim ## run all golden fixtures (fill model + safety spine + sim binding)
+test: test-fill test-safety test-sim test-features ## run all golden fixtures (fill model + safety spine + sim binding + feature spec)
 
 test-fill: ## pin the single fill engine against its golden values
 	$(CC) $(CFLAGS) tests/test_fill_model.c -lm -o /tmp/keel_test_fill
@@ -30,8 +30,11 @@ $(SIM_SO): sim/src/keel_sim.c sim/src/trading_env.c sim/include/trading_env.h
 test-sim: build-sim ## smoke + parity test the sim binding via ctypes
 	PYTHONPATH=. $(PYTHON) tests/test_sim_binding.py
 
+test-features: build-sim ## pin the ONE feature spec + validator + .bin round-trip
+	PYTHONPATH=. $(PYTHON) tests/test_features.py
+
 data: ## regenerate the committed-by-recipe synthetic sample .bin (git-ignored output)
-	$(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
+	PYTHONPATH=. $(PYTHON) sim/make_sample_data.py --output sim/data/sample.bin
 
 test-asan: ## same fixture under ASan/UBSan
 	$(CC) $(SAN) tests/test_fill_model.c -lm -o /tmp/keel_test_fill_asan

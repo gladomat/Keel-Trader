@@ -13,17 +13,16 @@ accept/reject and fail-fast branches without a trained model.
 from __future__ import annotations
 
 import argparse
-import math
 import random
-import struct
 from pathlib import Path
 
-MAGIC = b"MKTD"
-VERSION = 1
-PRICE_FEATURES = 5  # OHLCV
+from sim.binpack import write_market_bin
 
-# Imported lazily by tests; the canonical feature count lives in forecast.features.
-DEFAULT_FEATURES_PER_SYM = 16
+# The canonical feature count lives in the ONE feature spec.
+try:
+    from forecast.features import FEATURES_PER_SYM as DEFAULT_FEATURES_PER_SYM
+except Exception:  # forecast pkg not importable (e.g. partial checkout)
+    DEFAULT_FEATURES_PER_SYM = 16
 
 
 def _gen_symbol(rng: random.Random, n: int, base: float, drift: float):
@@ -65,23 +64,14 @@ def make_sample(output: Path, num_symbols: int = 2, num_timesteps: int = 1500,
         per_sym.append(_gen_symbol(rng, num_timesteps, base=100.0 + 10.0 * i,
                                    drift=0.0002 + 0.0001 * i))
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with open(output, "wb") as fh:
-        fh.write(struct.pack(
-            "<4sIIIII40s", MAGIC, VERSION, num_symbols, num_timesteps,
-            features_per_sym, PRICE_FEATURES, b"\x00" * 40,
-        ))
-        for s in syms:
-            fh.write(s.encode("ascii")[:15].ljust(16, b"\x00"))
-        # feature data: [T][S][F]
-        for t in range(num_timesteps):
-            for s in range(num_symbols):
-                row = per_sym[s][1][t]
-                fh.write(struct.pack(f"<{features_per_sym}f", *row))
-        # price data: [T][S][5]
-        for t in range(num_timesteps):
-            for s in range(num_symbols):
-                fh.write(struct.pack("<5f", *per_sym[s][0][t]))
+    # Reshape per-symbol rows into the [T][S][F] / [T][S][5] layout the packer wants.
+    features = [[per_sym[s][1][t] for s in range(num_symbols)] for t in range(num_timesteps)]
+    prices = [[list(per_sym[s][0][t]) for s in range(num_symbols)] for t in range(num_timesteps)]
+
+    write_market_bin(
+        output, syms, features, prices,
+        num_timesteps=num_timesteps, features_per_sym=features_per_sym, version=1,
+    )
 
     size = output.stat().st_size
     print(f"wrote {output} ({size:,} bytes): {num_symbols} symbols x {num_timesteps} timesteps")

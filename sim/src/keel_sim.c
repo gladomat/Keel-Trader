@@ -32,6 +32,17 @@ KEEL_API int keel_md_num_symbols(const MarketData* md)   { return md ? md->num_s
 KEEL_API int keel_md_num_timesteps(const MarketData* md) { return md ? md->num_timesteps : 0; }
 KEEL_API int keel_md_features_per_sym(const MarketData* md) { return md ? md->features_per_sym : 0; }
 
+/* Value accessors so the Python round-trip test can assert export -> .bin ->
+   market_data_load preserves features/prices bit-for-bit through the C loader. */
+KEEL_API float keel_md_feature(const MarketData* md, int t, int s, int f) {
+    if (!md) return 0.0f;
+    return md->features[(t * md->num_symbols + s) * md->features_per_sym + f];
+}
+KEEL_API float keel_md_price(const MarketData* md, int t, int s, int p) {
+    if (!md) return 0.0f;
+    return md->prices[(t * md->num_symbols + s) * PRICE_FEATS + p];
+}
+
 /* ---------- env lifecycle ----------
  *
  * Flow:  env = keel_env_create(md)
