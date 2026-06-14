@@ -15,11 +15,12 @@
 - Create `research/lab/__init__.py` — package marker.
 - Create `research/lab/strategy.py` — THE mutable file; `build_policy(md, *, seed=0) -> Policy`; trial-0 = current baseline.
 - Create `research/lab/harness.py` — frozen `run_one()` trial runner + `TrialResult` + hash helpers + `main()` for `make lab-trial`.
-- Create `research/lab/leaderboard.py` — frozen append-only CSV writer + manifest + `archive_strategy()`.
+- Create `research/lab/leaderboard.py` — frozen append-only **TSV** writer + manifest + `archive_strategy()`.
+- Create `research/lab/dashboard.py` — frozen renderer: one self-contained `dashboard.html` from the TSV + archives.
 - Create `research/lab/drive.py` — autonomous driver (context, mutator subprocess, budget, guardrails, keep-best).
 - Create `research/lab/program.md` — human-authored research brief.
 - Create `tests/test_lab.py` — stdlib-assert tests (stub mutator, no LLM).
-- Modify `Makefile` — add `lab-trial`, `lab-drive`, `test-lab`; wire `test-lab` into `test`.
+- Modify `Makefile` — add `lab-trial`, `lab-drive`, `lab-dashboard`, `test-lab`; wire `test-lab` into `test`.
 
 ---
 
@@ -332,6 +333,11 @@ Create `research/lab/leaderboard.py`:
 ```python
 """Append-only leaderboard for the lab. Never truncates; header written once.
 
+Written as TSV (tab-delimited): agents parse it more reliably than CSV because the
+``reason`` column contains commas (CSV would quote them); tab-delimiting avoids the
+ambiguity. Field values are sanitized on write (stray tabs/newlines -> spaces) so a
+column can never break.
+
 Each row carries a reproducibility manifest (git hash, hardware, seeds) plus the
 content hash of the exact ``strategy.py`` scored, and that file is archived to
 ``<archive_dir>/<strategy_hash>.py`` so every champion is byte-for-byte
@@ -349,12 +355,19 @@ from typing import Optional, Sequence
 
 from research.lab.harness import TrialResult
 
+_DELIM = "\t"
+
 LAB_LEADERBOARD_COLUMNS = [
     "timestamp", "git_hash", "hardware", "seed", "gate_seed",
     "strategy_hash", "frozen_hash", "train_median_monthly",
     "test_median_monthly", "generalization_score",
     "gate_promoted", "promoted", "trial_status", "reason",
 ]
+
+
+def _clean(value) -> str:
+    """Strip delimiters so a field can never break the TSV row."""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
 
 def git_hash() -> str:
@@ -387,7 +400,7 @@ def append_row(path: Path, result: TrialResult, *,
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     with open(path, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=LAB_LEADERBOARD_COLUMNS)
+        writer = csv.DictWriter(fh, fieldnames=LAB_LEADERBOARD_COLUMNS, delimiter=_DELIM)
         if write_header:
             writer.writeheader()
         writer.writerow({
@@ -400,7 +413,7 @@ def append_row(path: Path, result: TrialResult, *,
             "gate_promoted": int(result.gate_promoted),
             "promoted": int(result.promoted),
             "trial_status": result.trial_status,
-            "reason": result.reason,
+            "reason": _clean(result.reason),
         })
     return path
 
@@ -410,7 +423,7 @@ def read_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with open(path, newline="") as fh:
-        return list(csv.DictReader(fh))
+        return list(csv.DictReader(fh, delimiter=_DELIM))
 
 
 def best_ok_row(rows: Sequence[dict]) -> Optional[dict]:
@@ -433,7 +446,7 @@ def test_leaderboard_append_only_and_archive():
         data = Path(d) / "lab.bin"
         make_sample(data, num_symbols=2, num_timesteps=500, seed=7)
         strat = Path("research/lab/strategy.py")
-        lb = Path(d) / "leaderboard.csv"
+        lb = Path(d) / "leaderboard.tsv"
         arch = Path(d) / "strategies"
         md = MarketData.load(data)
         try:
@@ -494,7 +507,7 @@ def main():
     ap = argparse.ArgumentParser(description="Run ONE lab trial on the current strategy")
     ap.add_argument("--data", default="sim/data/sample.bin")
     ap.add_argument("--strategy", default="research/lab/strategy.py")
-    ap.add_argument("--leaderboard", default="artifacts/lab/leaderboard.csv")
+    ap.add_argument("--leaderboard", default="artifacts/lab/leaderboard.tsv")
     ap.add_argument("--archive-dir", default="artifacts/lab/strategies")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gate-seed", type=int, default=0)
@@ -540,7 +553,7 @@ TRIALS   ?= 50
 
 lab-trial: build-sim ## run ONE lab trial on the current research/lab/strategy.py
 	PYTHONPATH=. $(PYTHON) -m research.lab.harness --data $(LAB_DATA) \
-		--leaderboard artifacts/lab/leaderboard.csv
+		--leaderboard artifacts/lab/leaderboard.tsv
 
 test-lab: build-sim ## pin the lab harness/leaderboard/driver (stub mutator, no LLM)
 	PYTHONPATH=. $(PYTHON) tests/test_lab.py
@@ -559,7 +572,7 @@ def test_harness_cli_json_does_not_append():
     with tempfile.TemporaryDirectory() as d:
         data = Path(d) / "lab.bin"
         make_sample(data, num_symbols=2, num_timesteps=500, seed=7)
-        lb = Path(d) / "leaderboard.csv"
+        lb = Path(d) / "leaderboard.tsv"
         env = dict(os.environ, PYTHONPATH=".")
         out = subprocess.check_output(
             [sys.executable, "-m", "research.lab.harness", "--json",
@@ -765,7 +778,7 @@ def test_driver_loop_appends_and_keeps_best():
         program.write_text("# objective\nclear the gate net of friction\n")
         stub = _write_stub_mutator(dd)
         cfg = D.DriveConfig(
-            strategy_path=strat, leaderboard_path=dd / "lb.csv",
+            strategy_path=strat, leaderboard_path=dd / "lb.tsv",
             archive_dir=dd / "arch", program_path=program, data_path=data,
             mutator=f"{sys.executable} {stub}", trials=3, budget_seconds=60,
             windows=6, window_steps=100,
@@ -908,7 +921,7 @@ def test_driver_rejects_writes_outside_strategy():
             " 'frozen.py'), 'w').write('HACKED\\n')\n"
         )
         cfg = D.DriveConfig(
-            strategy_path=strat, leaderboard_path=dd / "lb.csv",
+            strategy_path=strat, leaderboard_path=dd / "lb.tsv",
             archive_dir=dd / "arch", program_path=dd / "noprogram.md",
             data_path=data, mutator=f"{sys.executable} {cheat}", trials=1,
             budget_seconds=60, windows=6, window_steps=100, guard_root=guard,
@@ -943,7 +956,7 @@ def test_driver_kills_over_budget_trial():
             "    '    return always_flat\\n')\n"
         )
         cfg = D.DriveConfig(
-            strategy_path=strat, leaderboard_path=dd / "lb.csv",
+            strategy_path=strat, leaderboard_path=dd / "lb.tsv",
             archive_dir=dd / "arch", program_path=dd / "noprogram.md",
             data_path=data, mutator=f"{sys.executable} {slow}", trials=1,
             budget_seconds=1.0, windows=6, window_steps=100,
@@ -1002,7 +1015,7 @@ def main():
     ap = argparse.ArgumentParser(description="Run the autoresearch lab driver")
     ap.add_argument("--data", default="sim/data/kraken_market.bin")
     ap.add_argument("--strategy", default="research/lab/strategy.py")
-    ap.add_argument("--leaderboard", default="artifacts/lab/leaderboard.csv")
+    ap.add_argument("--leaderboard", default="artifacts/lab/leaderboard.tsv")
     ap.add_argument("--archive-dir", default="artifacts/lab/strategies")
     ap.add_argument("--program", default="research/lab/program.md")
     ap.add_argument("--mutator", default=_DEFAULT_MUTATOR,
@@ -1080,7 +1093,7 @@ In `Makefile`: add `lab-drive` to `.PHONY`; append `test-lab` to the `test:` agg
 ```makefile
 lab-drive: build-sim ## run the autonomous lab driver (TRIALS=N, needs a coding-agent CLI for the default mutator)
 	PYTHONPATH=. $(PYTHON) -m research.lab.drive --data $(LAB_DATA) --trials $(TRIALS) \
-		--leaderboard artifacts/lab/leaderboard.csv
+		--leaderboard artifacts/lab/leaderboard.tsv
 ```
 
 The `test:` line becomes (append `test-lab`):
@@ -1112,7 +1125,244 @@ git commit -m "feat(lab): driver CLI + default mutator + program.md + make wirin
 
 ---
 
-## Task 8: Full-suite verification + README pointer
+## Task 8: Zero-dependency dashboard (`render` + driver hook + `make lab-dashboard`)
+
+**Files:**
+- Create: `research/lab/dashboard.py`
+- Modify: `research/lab/drive.py` (regenerate the dashboard after each append)
+- Modify: `Makefile` (add `lab-dashboard`)
+- Test: `tests/test_lab.py`
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/test_lab.py`:
+
+```python
+def test_dashboard_render_is_self_contained():
+    import research.lab.dashboard as DASH
+    import research.lab.leaderboard as LB
+    from research.lab.harness import TrialResult
+    with tempfile.TemporaryDirectory() as d:
+        dd = Path(d)
+        arch = dd / "arch"
+        arch.mkdir()
+        # Two archived strategy sources with distinct, findable content.
+        (arch / "aaaaaaaaaaaa.py").write_text(
+            "# STRAT_ALPHA\ndef build_policy(md,*,seed=0):\n    pass\n")
+        (arch / "bbbbbbbbbbbb.py").write_text(
+            "# STRAT_BETA\ndef build_policy(md,*,seed=0):\n    pass\n")
+        lb = dd / "leaderboard.tsv"
+        # Hand-write two rows via the frozen writer so the format matches production.
+        r1 = TrialResult(strategy_hash="aaaaaaaaaaaa", frozen_hash="f0", seed=0,
+                         gate_seed=0, train_median_monthly=0.05,
+                         test_median_monthly=0.02, generalization_score=0.01,
+                         gate_promoted=False, promoted=False, trial_status="ok",
+                         reason="below target, comma, in reason")
+        r2 = TrialResult(strategy_hash="bbbbbbbbbbbb", frozen_hash="f0", seed=0,
+                         gate_seed=1, train_median_monthly=0.20,
+                         test_median_monthly=0.15, generalization_score=0.12,
+                         gate_promoted=True, promoted=True, trial_status="ok",
+                         reason="cleared all cells")
+        LB.append_row(lb, r1)
+        LB.append_row(lb, r2)
+        out = dd / "dashboard.html"
+        DASH.render(lb, arch, out)
+        html = out.read_text()
+        # One self-contained file: nothing fetched from the network at view time.
+        for token in ("http://", "https://", "<link", "src="):
+            assert token not in html, token
+        # Embeds every archived strategy source inline.
+        assert "STRAT_ALPHA" in html and "STRAT_BETA" in html
+        # Embeds the row data (hashes + the comma-bearing reason survive).
+        assert "aaaaaaaaaaaa" in html and "bbbbbbbbbbbb" in html
+        assert "below target, comma, in reason" in html
+        # It is one HTML document.
+        assert html.lstrip()[:15].lower().startswith("<!doctype html>")
+    print("ok test_dashboard_render_is_self_contained")
+```
+
+Add to `__main__`:
+
+```python
+    test_dashboard_render_is_self_contained()
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `PYTHONPATH=. python3 tests/test_lab.py`
+Expected: `ModuleNotFoundError: No module named 'research.lab.dashboard'`.
+
+- [ ] **Step 3: Create `research/lab/dashboard.py`**
+
+```python
+"""Frozen: render the append-only leaderboard into ONE self-contained dashboard.html.
+
+No server, no CDN, no libraries. The TSV rows and each archived strategy.py are
+embedded inline as a JSON blob; a tiny vanilla-JS body draws an inline SVG progress
+chart and a click-to-expand trials table. Opens with file:// in any browser, offline.
+
+Frozen like the rest of the harness: the agent never edits this. Regenerated by the
+driver after each trial append and on demand via `make lab-dashboard`.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from research.lab.leaderboard import read_rows
+
+_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>autoresearch lab</title>
+<style>
+ body{{font:14px/1.5 system-ui,sans-serif;margin:1.5rem;color:#1a1a1a;background:#fafafa}}
+ h1{{font-size:1.2rem;margin:0 0 .25rem}}
+ .stats{{color:#555;margin-bottom:1rem}}
+ table{{border-collapse:collapse;width:100%;background:#fff}}
+ th,td{{text-align:left;padding:.35rem .5rem;border-bottom:1px solid #eee;font-variant-numeric:tabular-nums}}
+ tr.trial{{cursor:pointer}} tr.trial:hover{{background:#f0f6ff}}
+ .src{{display:none}} .src td{{background:#1e1e1e;color:#e6e6e6}}
+ .src pre{{margin:0;white-space:pre-wrap;font:12px/1.45 ui-monospace,monospace}}
+ .dot-promoted{{fill:#1a9e3f}} .dot-ok{{fill:#9aa0a6}} .dot-bad{{fill:#d33}}
+ svg{{background:#fff;border:1px solid #eee}}
+</style></head><body>
+<h1>autoresearch lab</h1>
+<div class="stats" id="stats"></div>
+<svg id="chart" width="760" height="240" viewBox="0 0 760 240"></svg>
+<table id="trials"><thead><tr>
+ <th>#</th><th>status</th><th>gen_score</th><th>test</th><th>train</th>
+ <th>promoted</th><th>gate_seed</th><th>hash</th><th>reason</th>
+</tr></thead><tbody id="rows"></tbody></table>
+<script id="data" type="application/json">{blob}</script>
+<script>
+const D=JSON.parse(document.getElementById("data").textContent);
+const rows=D.rows, src=D.sources;
+const num=s=>{{const v=parseFloat(s);return isNaN(v)?0:v;}};
+const isProm=r=>r.promoted==="1"||r.promoted===1;
+const cls=r=>r.trial_status!=="ok"?"dot-bad":(isProm(r)?"dot-promoted":"dot-ok");
+const ok=rows.filter(r=>r.trial_status==="ok");
+let best=null; ok.forEach(r=>{{if(!best||num(r.generalization_score)>num(best.generalization_score))best=r;}});
+const promoted=rows.filter(isProm).length;
+document.getElementById("stats").textContent=
+ `trials: ${{rows.length}}  |  promoted: ${{promoted}}  |  best gen_score: `+
+ (best?`${{num(best.generalization_score).toFixed(4)}} (${{best.strategy_hash.slice(0,12)}})`:"n/a");
+(function(){{
+ const W=760,H=240,P=30,svg=document.getElementById("chart");
+ if(!rows.length)return;
+ const ys=rows.map(r=>num(r.generalization_score));
+ let lo=Math.min(0,...ys),hi=Math.max(0.01,...ys); if(hi===lo)hi=lo+1;
+ const n=rows.length;
+ const X=i=>P+(n===1?(W-2*P)/2:i*(W-2*P)/(n-1));
+ const Y=v=>H-P-(v-lo)*(H-2*P)/(hi-lo);
+ const E="http://www.w3.org/2000/svg";
+ const mk=(t,a)=>{{const e=document.createElementNS(E,t);for(const k in a)e.setAttribute(k,a[k]);return e;}};
+ svg.appendChild(mk("line",{{x1:P,y1:Y(0),x2:W-P,y2:Y(0),stroke:"#ddd"}}));
+ let bsf=-Infinity,d="";
+ rows.forEach((r,i)=>{{bsf=Math.max(bsf,ys[i]);d+=(i?"L":"M")+X(i)+" "+Y(bsf)+" ";}});
+ svg.appendChild(mk("path",{{d:d,fill:"none",stroke:"#1a9e3f","stroke-width":1.5,opacity:.6}}));
+ rows.forEach((r,i)=>svg.appendChild(mk("circle",{{cx:X(i),cy:Y(ys[i]),r:3.5,class:cls(r)}})));
+}})();
+const tb=document.getElementById("rows");
+rows.forEach((r,i)=>{{
+ const tr=document.createElement("tr"); tr.className="trial";
+ const h=r.strategy_hash||"";
+ tr.innerHTML=`<td>${{i+1}}</td><td>${{r.trial_status}}</td>`+
+  `<td>${{num(r.generalization_score).toFixed(4)}}</td>`+
+  `<td>${{num(r.test_median_monthly).toFixed(4)}}</td>`+
+  `<td>${{num(r.train_median_monthly).toFixed(4)}}</td>`+
+  `<td>${{isProm(r)?"yes":"no"}}</td><td>${{r.gate_seed||""}}</td>`+
+  `<td>${{h.slice(0,12)}}</td><td>${{r.reason||""}}</td>`;
+ const sr=document.createElement("tr"); sr.className="src";
+ const td=document.createElement("td"); td.colSpan=9;
+ const pre=document.createElement("pre"); pre.textContent=src[h]||"(no archived source)";
+ td.appendChild(pre); sr.appendChild(td);
+ tr.addEventListener("click",()=>{{sr.style.display=sr.style.display==="table-row"?"none":"table-row";}});
+ tb.appendChild(tr); tb.appendChild(sr);
+}});
+</script></body></html>"""
+
+
+def render(leaderboard_path, archive_dir, out_html) -> Path:
+    """Write a single self-contained dashboard.html from the TSV + archived sources."""
+    rows = read_rows(leaderboard_path)
+    archive_dir = Path(archive_dir)
+    sources: dict[str, str] = {}
+    for r in rows:
+        h = r.get("strategy_hash", "")
+        if h and h not in sources:
+            f = archive_dir / f"{h}.py"
+            if f.exists():
+                sources[h] = f.read_text()
+    # Escape "</" so the JSON blob can never close the <script> tag early.
+    blob = json.dumps({"rows": rows, "sources": sources}).replace("</", "<\\/")
+    out_html = Path(out_html)
+    out_html.parent.mkdir(parents=True, exist_ok=True)
+    out_html.write_text(_PAGE.format(blob=blob))
+    return out_html
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `PYTHONPATH=. python3 tests/test_lab.py`
+Expected: `ok test_dashboard_render_is_self_contained` included.
+
+- [ ] **Step 5: Hook the driver to regenerate the dashboard after each append**
+
+In `research/lab/drive.py`, add a `dashboard_path` field to `DriveConfig` (default `None`):
+
+```python
+    dashboard_path: Optional[Path] = None    # if set, regenerated after each trial append
+```
+
+Add the import near the top (with the other lab imports):
+
+```python
+from research.lab import dashboard as DASH
+```
+
+In `drive()`, right after `LB.append_row(cfg.leaderboard_path, res)`, regenerate the dashboard when configured (never let a render error crash the loop):
+
+```python
+        if cfg.dashboard_path is not None:
+            try:
+                DASH.render(cfg.leaderboard_path, cfg.archive_dir, cfg.dashboard_path)
+            except Exception:
+                pass
+```
+
+In drive's `main()` (Task 7), add the CLI flag and pass it through to the `DriveConfig`:
+
+```python
+    ap.add_argument("--dashboard", default="artifacts/lab/dashboard.html")
+```
+
+set `dashboard_path=Path(args.dashboard)` when constructing the `DriveConfig`.
+
+- [ ] **Step 6: Add the `make lab-dashboard` target**
+
+In `Makefile`: add `lab-dashboard` to `.PHONY` and add the recipe:
+
+```makefile
+lab-dashboard: ## regenerate artifacts/lab/dashboard.html from the current leaderboard.tsv
+	PYTHONPATH=. $(PYTHON) -c "from research.lab.dashboard import render; \
+		render('artifacts/lab/leaderboard.tsv', 'artifacts/lab/strategies', 'artifacts/lab/dashboard.html')"
+```
+
+- [ ] **Step 7: Run the full lab test (expect PASS)**
+
+Run: `PYTHONPATH=. python3 tests/test_lab.py`
+Expected: all `ok ...` lines including the dashboard test.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add research/lab/dashboard.py research/lab/drive.py Makefile tests/test_lab.py
+git commit -m "feat(lab): zero-dependency dashboard (render + driver hook + make target)"
+```
+
+---
+
+## Task 9: Full-suite verification + README pointer
 
 **Files:**
 - Modify: `sim/README.md` (one-paragraph pointer) — or `docs/REPO_MAP.md` if that is the canonical index.
@@ -1135,7 +1385,9 @@ Adapts karpathy/autoresearch: the agent rewrites ONE mutable file
 harness scores it through the existing OOS gate and appends to an append-only
 leaderboard. Drive it with `make lab-drive TRIALS=N` (autonomous, needs a
 coding-agent CLI) or `make lab-trial` (one trial on the current strategy). The
-human-steered brief lives in `research/lab/program.md`. Distinct from the
+human-steered brief lives in `research/lab/program.md`. Inspect runs with
+`make lab-dashboard` (a single self-contained `artifacts/lab/dashboard.html`,
+also regenerated live by the driver). Distinct from the
 non-agentic grid-sweep `research/autoresearch.py`. See
 `docs/superpowers/specs/2026-06-14-autoresearch-lab-design.md`.
 ```
@@ -1155,15 +1407,16 @@ git commit -m "docs: point REPO_MAP at the research/lab autoresearch loop"
 - §2 honesty contract (frozen vs mutable) → Task 1 (strategy seam), Task 2 (`frozen_hash`), Task 6 (no-write guard). ✓
 - §3.1 mutable `strategy.py` `build_policy` seam → Task 1. ✓
 - §3.2 `run_trial` reuse of `evaluate` + `generalization_score` → Task 2 (`run_one`). ✓
-- §3.3 append-only leaderboard + manifest (`strategy_hash`, `frozen_hash`, `gate_seed`, `trial_status`) + archive → Task 3. ✓
+- §3.3 append-only **TSV** leaderboard (`_DELIM="\t"`, `_clean()` sanitizes fields) + manifest (`strategy_hash`, `frozen_hash`, `gate_seed`, `trial_status`) + archive → Task 3. Lab-only TSV; existing `autoresearch.py` keeps CSV (untouched). ✓
 - §3.4 driver: context, configurable mutator, subprocess budget, only-writes-strategy, gate-seed rotation, keep-best, stub mode → Tasks 5–7. ✓
 - §3.5 `program.md` → Task 7. ✓
-- §4 layout + Makefile targets → Tasks 4, 7. ✓
-- §5 tests (frozen seam, stub loop, archive/repro, no-write, budget) → Tasks 1–6. ✓
-- §6 non-goals: existing `autoresearch.py` untouched (no task modifies it); no optimizer; sequential; offline. ✓
+- §3.6 zero-dependency dashboard (`render()` → one self-contained HTML: header stats + inline-SVG progress chart + click-to-expand trials table; driver hook + `make lab-dashboard`) → Task 8. ✓
+- §4 layout + Makefile targets (`lab-trial`, `lab-drive`, `lab-dashboard`, `test-lab`) → Tasks 4, 7, 8. ✓
+- §5 tests (frozen seam, stub loop, archive/repro, no-write, budget, dashboard self-contained) → Tasks 1–6, 8. ✓
+- §6 non-goals: existing `autoresearch.py` untouched (no task modifies it; keeps CSV); no optimizer; sequential; offline; dashboard stays minimal (chart + table + click-to-view-source, no sort/filter/live-refresh). ✓
 
 **Placeholder scan:** No TBD/TODO; every code step shows complete code. ✓
 
-**Type consistency:** `TrialResult` fields defined in Task 2 are used identically by `leaderboard.append_row` (Task 3), `harness.main --json` (Task 4), and `drive` (Tasks 5–6). `DriveConfig` defined in Task 5, extended with `guard_root` in Task 6, consumed by `main()` in Task 7 — all field names match. `evaluate` is always called with the real signature `evaluate(policy, md, *, ...)`. `generalization_score` imported from `research.autoresearch`. ✓
+**Type consistency:** `TrialResult` fields defined in Task 2 are used identically by `leaderboard.append_row` (Task 3), `harness.main --json` (Task 4), and `drive` (Tasks 5–6). `DriveConfig` defined in Task 5, extended with `guard_root` in Task 6 and `dashboard_path` in Task 8, consumed by `main()` in Task 7 — all field names match. `dashboard.render(leaderboard_path, archive_dir, out_html)` (Task 8) consumes the same TSV via `read_rows` and the same `strategies/<hash>.py` archive layout written by `leaderboard.archive_strategy` (Task 3). `evaluate` is always called with the real signature `evaluate(policy, md, *, ...)`. `generalization_score` imported from `research.autoresearch`. ✓
 
 **Note for the implementer:** the C sim must be built (`make build-sim`) before any test runs; Task 1 Step 4 does this and the Makefile lab targets depend on `build-sim`.
