@@ -69,8 +69,14 @@ frictions? Run on all three `.bin`s. Three results:
    short for the walk-forward regime test** that actually kills candidates. So the
    long-history sweeps / walk-forward (`fs_deep*.csv`, the 365d/4yr runs) judged the
    technical half of the spec only; the Chronos forecasts were never present where
-   the killing happens. The "no edge" verdict is sound for the technical features and
-   **unverified, not disproven**, for the forecasts.
+   the killing happens. **Now closed (2026-06-14):** rebuilt the Chronos cache over
+   the full 365d (`forecast/cache/kraken_deep`, 8249 rows/sym/horizon), rebuilt
+   `kraken_deep.bin` with `--forecast-cache` (forecast cols 0-7 non-zero), and re-ran
+   `feature-search` long + long-short (`artifacts/fs_deep_fc.csv`): **256 candidates,
+   0 positive OOS, 0 promoted.** The 128 forecast-feature candidates are flat-zero
+   (degenerate — a near-constant confidence signal takes no position) or net-negative;
+   the best long-short is still the `atr_pct_24h` short at −0.47/mo. So the forecasts
+   are now **verified to add no tradeable edge on long history**, not merely untested.
 2. **Direction is genuinely dead** (confirms the headline). Pooled time-series IC
    ≈ 0; multi-feature OLS OOS R² ≤ 0; next-bar sign hit-rate 0.496–0.521 (base 0.50);
    return autocorrelation within ±0.04. No directional timing edge exists pre-cost.
@@ -84,11 +90,12 @@ frictions? Run on all three `.bin`s. Three results:
    and is the same low-vol effect walk-forward already flagged as regime luck (1/8
    folds) — big IC, not robustly tradeable single-position.
 
-**Actionable before closing the book:** rebuild `kraken_deep`/`kraken_daily` with
-`--forecast-cache` (extend the Chronos cache over the backfilled deep history first),
-then re-run `feature-search` + `walkforward` with the forecast features actually
-populated. The faint but significant `forecast_confidence` / `chronos_*_delta` ICs on
-the 4-month file justify one honest re-run.
+**Done (2026-06-14):** the long-history re-run above closes the forecast gap for
+hourly `feature-search` — no edge. The faint 4-month `forecast_confidence` /
+`chronos_*_delta` ICs did not survive contact with the full-year gate. Remaining
+loose ends if ever revisited: rebuild `kraken_daily` the same way and re-run
+`walkforward` (the regime test) on the forecast-populated deep — but given 0/256
+positive OOS hourly, expect the same verdict.
 
 ## Root cause (the ceiling)
 
