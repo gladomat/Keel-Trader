@@ -54,6 +54,42 @@ vault; the numbers below are reproduced from the runs.
 Daily beats hourly (momentum 3/8 vs 1/8) but stays net-losing; on daily the
 blocker is **signal/breadth**, not friction.
 
+## Residual analysis (`research/residual_analysis.py`, `make residual`)
+
+A cost-free *measurement* pass (Information Coefficient / market-neutral residual /
+vol clustering) asking the upstream question the gate can't: is there **any** linear
+predictability in the raw series, decoupled from the 26 bps + slippage + binary-fill
+frictions? Run on all three `.bin`s. Three results:
+
+1. **Forecast columns were zero in the files the verdict was written on.** Spec
+   indices 0-7 (the 8 Chronos features) are **constant 0** in `kraken_deep.bin` and
+   `kraken_daily.bin` — they were built without `--forecast-cache`
+   (`sim/kraken_data.py` leaves forecasts as "honest zeros" by design). Only
+   `kraken_market.bin` (~4 months, ~2880 h) carries real forecasts, and it is **too
+   short for the walk-forward regime test** that actually kills candidates. So the
+   long-history sweeps / walk-forward (`fs_deep*.csv`, the 365d/4yr runs) judged the
+   technical half of the spec only; the Chronos forecasts were never present where
+   the killing happens. The "no edge" verdict is sound for the technical features and
+   **unverified, not disproven**, for the forecasts.
+2. **Direction is genuinely dead** (confirms the headline). Pooled time-series IC
+   ≈ 0; multi-feature OLS OOS R² ≤ 0; next-bar sign hit-rate 0.496–0.521 (base 0.50);
+   return autocorrelation within ±0.04. No directional timing edge exists pre-cost.
+3. **The one robust, universal residual is variance, not drift.** `|r|` lag-1
+   autocorrelation is **+0.21–0.25 on every file and cadence**; R²(|r₊₁| ~
+   `atr_pct_24h`) ≈ 0.06–0.10. GARCH-grade, regime-stable, sign-independent volatility
+   clustering. Not a directional money-pump, but it is exactly the structure a
+   **vol-target / position-sizing risk overlay** needs — which serves keel's actual
+   mandate (low-drawdown, smooth-Sortino) even with zero alpha. The cross-sectional
+   vol rank-IC is large (t up to −18) but **survives market-neutralization unchanged**
+   and is the same low-vol effect walk-forward already flagged as regime luck (1/8
+   folds) — big IC, not robustly tradeable single-position.
+
+**Actionable before closing the book:** rebuild `kraken_deep`/`kraken_daily` with
+`--forecast-cache` (extend the Chronos cache over the backfilled deep history first),
+then re-run `feature-search` + `walkforward` with the forecast features actually
+populated. The faint but significant `forecast_confidence` / `chronos_*_delta` ICs on
+the 4-month file justify one honest re-run.
+
 ## Root cause (the ceiling)
 
 A real cross-sectional edge (moray's verified money came from ranking **846
@@ -80,6 +116,7 @@ any cadence/cost model we tested. That is a valid, money-saving conclusion.
 |------|------|-----|
 | `research/feature_search.py` | sweep signal feature × sign × config through the gate (train/test split), long / long-short, `--fee-rate/--slip-bps/--max-hold` | `make feature-search` |
 | `research/walkforward.py` | evaluate a signal across N consecutive OOS folds (regime test); `xsvol` cross-sectional policy | `make walkforward` |
+| `research/residual_analysis.py` | cost-free predictability map: pooled/XS-rank IC, market-neutral residual IC, return autocorr, vol clustering, multi-feature OOS R² | `make residual` |
 | `forecast/build_kraken_cache.py` | Chronos-2 zero-shot forecast cache (MPS) | `make build-cache-kraken` |
 | `forecast/finetune_kraken.py` | optional LoRA fine-tune + held-out MAE | `make finetune-kraken` |
 | `models/xgb/train.py` | XGB champion, leakage-safe `--train-frac` | `make train-kraken` |
