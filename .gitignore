@@ -21,5 +21,8 @@ checkpoints/
 forecast/cache/
 artifacts/
 
+# finetuned model output (large; regenerate via the training run)
+chronos-2-finetuned/
+
 # deploy run output (append-only history written by ops/deploy_live_trader.sh)
 ops/deploy_history.log
